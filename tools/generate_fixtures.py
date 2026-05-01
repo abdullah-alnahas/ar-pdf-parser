@@ -28,6 +28,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DIGITAL_CLEAN = REPO_ROOT / "tests" / "fixtures" / "pdfs" / "digital-clean"
+DIGITAL_BROKEN = REPO_ROOT / "tests" / "fixtures" / "pdfs" / "digital-broken"
 
 
 # Use a small set of Arabic words rendered as standalone glyphs (no
@@ -159,17 +160,89 @@ def _build_real_arabic() -> bool:
     return True
 
 
+def _build_broken_mojibake() -> None:
+    """Phase-3 broken fixture: looks like Arabic content but the text layer
+    decoded to private-use codepoints and odd Latin runs. Simulated by
+    drawing strings drawn from non-Arabic codepoints with apparent
+    Arabic-paragraph length / line-break behaviour.
+    """
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    out = DIGITAL_BROKEN / "mojibake.pdf"
+    c = canvas.Canvas(str(out), pagesize=letter)
+    width, height = letter
+    c.setFont("Helvetica", 12)
+    y = height - 100
+    # Random-ish bytes mapped to printable ASCII; many short word-lengths
+    # should diverge from the Arabic reference distribution sharply.
+    for line in [
+        "??????? ??? ?????? ?? ??????? ??? ?? ?",
+        "?? ??? ?? ? ?? ?? ??? ?? ? ?? ??",
+        "? ?? ?? ?? ?? ? ?? ?? ?? ? ??",
+        "????????????????????????????????",
+    ]:
+        c.drawString(72, y, line)
+        y -= 16
+    c.showPage()
+    c.save()
+
+
+def _build_broken_replacement_glyphs() -> None:
+    """Phase-3 broken fixture: text layer dominated by U+FFFD / private-use
+    glyphs, the failure mode of glyph-id-not-Unicode encodings.
+
+    Generation strategy: write printable strings using codepoints from
+    the Private Use Area + interspersed FFFD; reportlab requires a font
+    that can render these. We fall back to writing many "?" characters
+    plus a few PUA codepoints rendered via a TTF when available; the
+    text-layer codepoints we wrote will be reflected in the PDF text
+    stream regardless of whether the glyph renders.
+    """
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    out = DIGITAL_BROKEN / "replacement-glyphs.pdf"
+    c = canvas.Canvas(str(out), pagesize=letter)
+    width, height = letter
+    c.setFont("Helvetica", 12)
+    y = height - 100
+    # PUA + FFFD chars (Helvetica will render fallback boxes; the text
+    # layer keeps the actual codepoints we asked for).
+    rep_chars = "�" * 20 + "" * 5
+    lines = [
+        rep_chars,
+        rep_chars,
+        rep_chars,
+        rep_chars,
+    ]
+    for line in lines:
+        c.drawString(72, y, line)
+        y -= 16
+    c.showPage()
+    c.save()
+
+
 def main() -> int:
     DIGITAL_CLEAN.mkdir(parents=True, exist_ok=True)
+    DIGITAL_BROKEN.mkdir(parents=True, exist_ok=True)
     _build_2col()
     _build_mixed()
     _build_table()
     real_arabic = _build_real_arabic()
-    names = ["lorem-ar-2col.pdf", "lorem-ar-en-mixed.pdf", "lorem-ar-table.pdf"]
+    _build_broken_mojibake()
+    _build_broken_replacement_glyphs()
+    names = [
+        "digital-clean/lorem-ar-2col.pdf",
+        "digital-clean/lorem-ar-en-mixed.pdf",
+        "digital-clean/lorem-ar-table.pdf",
+    ]
     if real_arabic:
-        names.append("lorem-ar-real.pdf")
+        names.append("digital-clean/lorem-ar-real.pdf")
+    names.extend(["digital-broken/mojibake.pdf", "digital-broken/replacement-glyphs.pdf"])
+    fixtures_root = REPO_ROOT / "tests" / "fixtures" / "pdfs"
     for name in names:
-        fixture = DIGITAL_CLEAN / name
+        fixture = fixtures_root / name
         print(f"  wrote {fixture.relative_to(REPO_ROOT)} ({fixture.stat().st_size} bytes)")
     if not real_arabic:
         print("  (no Arabic-capable TTF found; skipped lorem-ar-real.pdf)")
