@@ -40,8 +40,28 @@ class OCRTranscriptionError(ArabicPdfTranscribeError):
     """
 
 
+class EncryptedPDFError(ArabicPdfTranscribeError):
+    """Raised when an input PDF carries an encryption dict.
+
+    v1 does not support password-protected PDFs; the CLI surfaces this as
+    exit code 3 with a clear stderr message. Added in phase 2 because the
+    safe-by-default ``pypdfium2`` loader naturally needs to translate the
+    PDFium error at the boundary.
+    """
+
+
+class CorruptedPDFError(ArabicPdfTranscribeError):
+    """Raised when a PDF cannot be opened or parsed.
+
+    Wraps lower-level ``pypdfium2`` / OS errors so callers don't need to
+    import the underlying library to catch them.
+    """
+
+
 __all__ = [
     "ArabicPdfTranscribeError",
+    "CorruptedPDFError",
+    "EncryptedPDFError",
     "ModelDownloadError",
     "OCRTranscriptionError",
 ]

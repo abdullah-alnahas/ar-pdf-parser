@@ -8,6 +8,10 @@ description = "Arabic-first PDF transcriber: native text extraction with ML fall
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Abdullah Al Nahas" }]
+# Python 3.11+ is required because the license-audit harness uses ``tomllib``
+# from the standard library (stdlib since 3.11). Spec / plan originally said
+# ">=3.10"; the bump was accepted as part of phase-1 multi-agent review and
+# is documented in the plan's "Expert Review" iteration-1 section.
 requires-python = ">=3.11"
 dynamic = ["version"]
 classifiers = [
@@ -38,6 +42,7 @@ dev = [
     "pytest-cov==6.0.0",
     "ruff==0.8.4",
     "coverage==7.6.10",
+    "reportlab==4.2.5",
 ]
 
 [project.scripts]
