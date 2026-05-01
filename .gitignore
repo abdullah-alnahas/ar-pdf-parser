@@ -9,6 +9,24 @@ node_modules/
 
 # Build output
 dist/
+build/
+*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Builder-runtime artifacts (per-builder, not part of the repo)
+.builder-prompt.txt
+.builder-role.md
+.builder-start.sh
 
 # OS files
 .DS_Store

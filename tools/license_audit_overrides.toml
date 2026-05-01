@@ -1,0 +1,16 @@
+# License-audit overrides.
+#
+# Each entry pins a (distribution, version) tuple to a specific normalised
+# license. Add entries here when an upstream package declares its license
+# inconsistently in metadata (e.g. License field is empty but the package is
+# verifiably MIT per its repository). PR reviewers must scrutinise additions —
+# include a comment with the source of truth (link to the repo's LICENSE).
+#
+# Schema:
+#
+#   [[overrides]]
+#   dist    = "package-name==1.2.3"   # lowercased name, exact version pin
+#   license = "MIT"                   # canonical SPDX-style identifier
+#   note    = "https://github.com/.../blob/main/LICENSE"  # justification
+
+overrides = []
