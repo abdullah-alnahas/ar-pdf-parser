@@ -1,0 +1,103 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arabic-pdf-transcribe"
+description = "Arabic-first PDF transcriber: native text extraction with ML fallback for layout and OCR. Emits Markdown and Word."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Abdullah Al Nahas" }]
+requires-python = ">=3.11"
+dynamic = ["version"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing",
+    "Natural Language :: Arabic",
+]
+dependencies = [
+    "pypdfium2==4.30.0",
+    "python-docx==1.1.2",
+]
+
+[project.optional-dependencies]
+ml = [
+    "huggingface-hub==0.26.2",
+    "transformers==4.46.3",
+    "torch==2.5.1",
+    "Pillow==11.0.0",
+]
+dev = [
+    "pytest==8.3.4",
+    "pytest-cov==6.0.0",
+    "ruff==0.8.4",
+    "coverage==7.6.10",
+]
+
+[project.scripts]
+arabic-pdf-transcribe = "arabic_pdf_transcribe.cli:main"
+
+[project.urls]
+Repository = "https://github.com/abdullah-alnahas/ar-pdf-parser"
+
+[tool.hatch.version]
+path = "src/arabic_pdf_transcribe/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arabic_pdf_transcribe"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "B",
+    "UP",
+    "SIM",
+    "RUF",
+]
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "slow: marks tests as slow (skipped by default; run with --run-slow)",
+]
+filterwarnings = [
+    "error",
+]
+
+[tool.coverage.run]
+source = ["arabic_pdf_transcribe"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]

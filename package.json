@@ -1,0 +1,9 @@
+{
+  "name": "arabic-pdf-transcribe-porch-shim",
+  "private": true,
+  "description": "Shim package.json: this is a Python project. The scripts here exist only so the porch state-machine's hard-coded `npm run build` / `npm test` checks delegate to the real Python tooling. See pyproject.toml for the actual project metadata.",
+  "scripts": {
+    "build": "sh -c 'make lint'",
+    "test": "sh -c 'make test'"
+  }
+}

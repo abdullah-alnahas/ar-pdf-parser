@@ -1,0 +1,21 @@
+# Pinned Hugging Face model registry.
+#
+# Phase 1: the registry is intentionally empty. Phases 4 and 5 will append
+# entries for the chosen layout-detection and OCR / VLM models, each pinned by
+# commit revision (not floating tag) and tagged with the resolved license. The
+# license-audit harness (tools/license_audit.py) validates that every entry's
+# license is in the project's allow-list.
+#
+# Schema (validated by tools/license_audit.py):
+#
+#   [[models]]
+#   name      = "owner/repo"           # required
+#   revision  = "<commit-sha>"         # required, pinned commit hash
+#   license   = "Apache-2.0"           # required, must be in allow-list
+#   stage     = "layout" | "ocr"       # required, which pipeline stage
+#   footprint_mb = 0                   # optional, on-disk size
+#   source_url = "https://..."         # optional, model card URL
+#
+# The list intentionally starts empty.
+
+models = []
