@@ -1,7 +1,7 @@
 id: '1'
 title: arabic-pdf-transcriber-extract
 protocol: spir
-phase: implement
+phase: review
 plan_phases:
   - id: phase_1_skeleton_and_license_audit
     title: Project skeleton, tooling, and license-audit harness
@@ -29,8 +29,8 @@ plan_phases:
     status: complete
   - id: phase_9_benchmark_corpus_and_docs
     title: Benchmark corpus, end-to-end tests, license-audit CI, and documentation
-    status: in_progress
-current_plan_phase: phase_9_benchmark_corpus_and_docs
+    status: complete
+current_plan_phase: null
 gates:
   spec-approval:
     status: approved
@@ -45,7 +45,7 @@ gates:
   verify-approval:
     status: pending
 iteration: 1
-build_complete: true
+build_complete: false
 history:
   - iteration: 1
     plan_phase: phase_1_skeleton_and_license_audit
@@ -192,7 +192,7 @@ history:
         file: >-
           /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-claude.txt
 started_at: '2026-05-01T18:20:53.792Z'
-updated_at: '2026-05-02T09:46:08.963Z'
+updated_at: '2026-05-02T09:46:10.884Z'
 pr_history:
   - phase: implement
     pr_number: 4
