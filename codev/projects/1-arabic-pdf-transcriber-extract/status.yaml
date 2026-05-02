@@ -23,14 +23,14 @@ plan_phases:
     status: complete
   - id: phase_7_emitters_markdown_and_docx
     title: Markdown and Word (.docx) emitters
-    status: in_progress
+    status: complete
   - id: phase_8_cli_and_pipeline_orchestrator
     title: CLI and pipeline orchestrator with full failure-mode coverage
-    status: pending
+    status: in_progress
   - id: phase_9_benchmark_corpus_and_docs
     title: Benchmark corpus, end-to-end tests, license-audit CI, and documentation
     status: pending
-current_plan_phase: phase_7_emitters_markdown_and_docx
+current_plan_phase: phase_8_cli_and_pipeline_orchestrator
 gates:
   spec-approval:
     status: approved
@@ -45,7 +45,7 @@ gates:
   verify-approval:
     status: pending
 iteration: 1
-build_complete: true
+build_complete: false
 history:
   - iteration: 1
     plan_phase: phase_1_skeleton_and_license_audit
@@ -160,7 +160,7 @@ history:
         file: >-
           /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_7_emitters_markdown_and_docx-iter1-claude.txt
 started_at: '2026-05-01T18:20:53.792Z'
-updated_at: '2026-05-02T07:44:57.850Z'
+updated_at: '2026-05-02T07:44:59.767Z'
 pr_history:
   - phase: implement
     pr_number: 4
