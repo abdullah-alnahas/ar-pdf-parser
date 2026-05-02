@@ -119,7 +119,10 @@ Full suite: **453 passed** (434 baseline + 19 new). Ruff clean.
 |----------|------|---------|-------|
 | Claude   | 1    | COMMENT (HIGH) | Dup of `_is_cuda_oom` / `_move_inputs_to_device` across both adapters and (separately) `pipeline.py`. `contextlib.suppress` on `model.to()` could hide non-OOM failures with no log. → addressed in iter-2 by consolidating both helpers into `_device.py` and replacing the silent `suppress` on `model.to()` with a logged-warning fallback in `place_model`. The pre-existing `pipeline._is_cuda_oom` was left intact (out of bugfix scope; pipeline does not need the string-fallback heuristic). |
 | Codex    | 1    | REQUEST_CHANGES (MEDIUM) | (a) `--device` did not actually override per-section `[layout].device` / `[ocr].device` despite the PR description claiming it. (b) README said `--device cuda` "fails loudly" while the implementation logs a warning and falls back to CPU. (c) Missing `codev/reviews/18-*.md`. (d) Commit-message format. → (a) Fixed: `_resolve_device` returns `(value, cli_override)`; `_maybe_build_ml_adapters(force_device=...)` overrides per-section when CLI was explicit; new test `test_cli_device_flag_overrides_per_section_device`. (b) README now matches the actual behavior. (c) This file. (d) Same `Fix #N: ...` format used by past bugfixes (#12, #14, #16); convention is bugfix-specific. |
-| Gemini   | 1    | N/A | Quota / trust-folder error; consult harness exited 55 before the model returned. Re-run after iter-2 changes. |
+| Gemini   | 1    | N/A | Trust-folder error on first attempt; quota-exhausted on iter-2 retry (10 attempts, all 429). Reviewer infrastructure unavailability, not a content verdict. |
+| Claude   | 2    | APPROVE (HIGH) | "Iter-2 addressed all material review feedback; residual `pipeline._is_cuda_oom` divergence is explicitly deferred and low-risk." No blocking issues. |
+| Codex    | 2    | N/A | "You've hit your usage limit for premium. Try again at May 8th, 2026." Quota exhausted; iter-1 changes were addressed in code (verifiable in diff) — `--device` precedence fixed via `force_device`, README wording corrected, review doc added. |
+| Gemini   | 2    | N/A | Quota exhausted on retries (same as iter-1). |
 
 ## Lessons Learned
 
