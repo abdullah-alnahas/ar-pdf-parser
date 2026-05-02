@@ -48,12 +48,16 @@ LABEL_TO_ROLE: dict[str, RegionRole] = {
     # ``Formula`` is mapped to PARAGRAPH for Arabic-first usage. The
     # default DiT model (cmarkea/dit-base-layout-detection) was trained
     # on English research papers and frequently mislabels justified
-    # Arabic body text as ``Formula``. Mapping to UNKNOWN previously
-    # caused phase 7's emitter to drop body text silently — the worst
-    # failure mode. Mathematical formulas are rare in general Arabic
-    # books, so the false-positive cost (lost text) outweighs the
-    # false-negative cost (a real formula rendered as plain text).
-    # See issue #16 root cause #2.
+    # Arabic body text as ``Formula`` (39 such regions on a single
+    # Foulabook page in issue #16). The previous mapping to UNKNOWN
+    # did not drop the text — both PARAGRAPH and UNKNOWN render via
+    # ``_render_paragraph`` in the markdown emitter — but it triggered
+    # the hf_detector's "label X mapped to UNKNOWN" warning on every
+    # mislabelled region, drowning the log in spurious noise and
+    # misleading users into thinking the text had been lost.
+    # Mathematical formulas are rare in general Arabic books, so the
+    # semantically-correct mapping (this is body text, not unknown
+    # content) is PARAGRAPH. See issue #16 root cause #2.
     "Formula": RegionRole.PARAGRAPH,
     "List-item": RegionRole.LIST_ITEM,
     "Page-footer": RegionRole.HEADER_FOOTER,

@@ -24,15 +24,28 @@ Three independent regressions, piled on top of each other:
    present — the model weights never came down because transformers
    refused to instantiate the config.
 
-2. **`Formula → UNKNOWN` was a silent text-eater.** The default DiT
-   layout model (`cmarkea/dit-base-layout-detection`) was trained
-   primarily on English research papers and frequently mislabels
-   justified Arabic body text as `Formula`. `layout/_classes.py`
-   mapped `Formula → RegionRole.UNKNOWN`; the markdown emitter has
-   no rescue path for UNKNOWN body text, so phase-7 dropped those
-   regions silently. The Foulabook page 7 alone produced 39
-   `label 'Formula' mapped to UNKNOWN` warnings — entire pages of
-   body text were lost even when OCR worked.
+2. **`Formula → UNKNOWN` flooded the log with spurious warnings.**
+   The default DiT layout model
+   (`cmarkea/dit-base-layout-detection`) was trained primarily on
+   English research papers and frequently mislabels justified
+   Arabic body text as `Formula`. `layout/_classes.py` mapped
+   `Formula → RegionRole.UNKNOWN`. **The text was not actually
+   dropped** — the markdown emitter renders both UNKNOWN and
+   PARAGRAPH through the same paragraph renderer, and the role
+   classifier preserves UNKNOWN regions — but every mislabelled
+   region triggered the hf_detector's
+   `"label 'Formula' mapped to UNKNOWN; phase 6 will handle it"`
+   log warning (39 such warnings on a single Foulabook page). The
+   visible "missing body text" the issue reporter saw was actually
+   caused by RC#1: with the OCR model failing to load, every
+   ML-branch page collapsed into a `FAILURE_PLACEHOLDER`, wiping
+   the (correctly captured) layout regions including those
+   labelled UNKNOWN. The remap to PARAGRAPH is still warranted: it
+   is semantically more accurate (this *is* body text, not
+   unknown content) and removes the noise that caused the
+   misdiagnosis in the first place. (Codex CMAP iter-2 caught the
+   incorrect "silently dropped" claim; rationale corrected here
+   and in the code comment.)
 
 3. **JSON-log failures lost the actionable hint.** Pipeline's
    `ArabicPdfTranscribeError` arm recorded only `type(exc).__name__`
@@ -77,12 +90,18 @@ New file: `tests/test_issue_16_regression.py` (5 tests).
 5. `test_json_failure_event_includes_exception_message` — exercises
    the JSON serialiser with a `ModelDownloadError`-shaped reason
    string, asserts the actionable hint reaches the log line.
+6. `test_formula_label_does_not_log_unknown_warning_on_detection`
+   (added in iter-3) — end-to-end stub run through
+   `HFDiTLayoutDetector.detect`: a Formula-labelled segmentation
+   must not log `"mapped to UNKNOWN"`, must produce
+   PARAGRAPH-roled regions, and the transcribed text must reach
+   the markdown emitter's output.
 
 Updated: `tests/test_layout_protocol.py` parametrize entry for
 `Formula`; `tests/test_pipeline.py` failure-reason assertion (now
 checks the `<class>:<msg>` format).
 
-Full suite: **433 passed** (428 baseline + 5 new). Ruff clean.
+Full suite: **434 passed** (428 baseline + 6 new). Ruff clean.
 
 ## Out of Scope (Deferred)
 
@@ -102,11 +121,12 @@ Full suite: **433 passed** (428 baseline + 5 new). Ruff clean.
 
 ## CMAP Verdicts
 
-| Reviewer | Verdict          | Notes                                               |
-|----------|------------------|-----------------------------------------------------|
-| Claude   | APPROVE          | HIGH confidence, no key issues                      |
-| Codex    | REQUEST_CHANGES → addressed | Iter-1: smoke test only hit `AutoConfig`, missing review doc, untracked lock file. All addressed in iter-2. |
-| Gemini   | N/A              | Quota-exhausted on every retry (10 attempts); reviewer infrastructure failure, not a content verdict. |
+| Reviewer | Iter | Verdict | Notes |
+|----------|------|---------|-------|
+| Claude   | 1    | APPROVE | HIGH confidence, no key issues |
+| Codex    | 1    | REQUEST_CHANGES → addressed | (a) RC#1 smoke only exercised `AutoConfig`, not the failing `AutoModelForImageTextToText` path. (b) Missing `codev/reviews/16-*.md`. (c) Untracked `.claude/scheduled_tasks.lock`. All addressed in iter-2. |
+| Codex    | 2    | REQUEST_CHANGES → addressed | (a) RC#2 "silently dropped" claim was wrong — UNKNOWN renders as paragraph; rationale corrected and a stronger end-to-end regression test added. (b) Commit-message format concern (`[Spec N]...`) — past bugfixes (#12, #14) use the same `Fix #N: ...` format this PR uses, so the convention is bugfix-specific and the commits are consistent with project history. |
+| Gemini   | 1    | N/A | Quota-exhausted on every retry (10 attempts); reviewer infrastructure failure, not a content verdict. |
 
 ## Lessons Learned
 
