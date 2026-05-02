@@ -98,7 +98,9 @@ def test_got_ocr2_class_is_registered_in_auto_image_text_to_text() -> None:
     # is not gated by transformers' ``Literal``-narrowed stubs (those
     # lag the runtime registry by minor versions and would force a
     # type-ignore here for a value that exists at runtime).
-    mapping: dict[str, str] = {str(k): str(v) for k, v in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES.items()}
+    mapping: dict[str, str] = {
+        str(k): str(v) for k, v in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES.items()
+    }
     assert "got_ocr2" in mapping, (
         "AutoModelForImageTextToText has no entry for model_type "
         "'got_ocr2'; transformers is too old (<4.49). This is the "
@@ -225,8 +227,7 @@ def test_formula_label_does_not_log_unknown_warning_on_detection(
     )
     assert regions, "expected at least one Region from the stub Formula segmentation"
     assert all(r.role is RegionRole.PARAGRAPH for r in regions), (
-        f"expected all regions to carry RegionRole.PARAGRAPH; "
-        f"got {[r.role for r in regions]}"
+        f"expected all regions to carry RegionRole.PARAGRAPH; " f"got {[r.role for r in regions]}"
     )
 
     # Render-side: a Formula-labelled region with body text MUST appear

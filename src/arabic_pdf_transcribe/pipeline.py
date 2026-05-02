@@ -304,12 +304,14 @@ def _process_page(
         regions = _run_ml_branch(
             document=document,
             native_page=native_page,
+            total=total,
             layout_detector=layout_detector,
             ocr_transcriber=ocr_transcriber,
             reorder_call=reorder_call,
             classify_cfg=classify_cfg,
             rtl=rtl,
             dpi=dpi,
+            progress=progress,
         )
         _emit_progress(progress, page_index, total, "complete:ml")
         return PageOutcome(
@@ -388,22 +390,33 @@ def _run_ml_branch(
     *,
     document: object,
     native_page: NativePage,
+    total: int,
     layout_detector: LayoutDetector | None,
     ocr_transcriber: OCRTranscriber | None,
     reorder_call: Callable[..., list[Region]],
     classify_cfg: ClassifyConfig,
     rtl: bool,
     dpi: int,
+    progress: ProgressCallback | None,
 ) -> list[Region]:
     if layout_detector is None or ocr_transcriber is None:
         raise RuntimeError(
             "ML branch needed for page "
             f"{native_page.page_index + 1} but no layout_detector / ocr_transcriber wired"
         )
-    page_image = _rasterise_page_from_document(document, native_page.page_index, dpi=dpi)
-    detected = list(layout_detector.detect(page_image, native_page.page_index))
+    page_index = native_page.page_index
+    _emit_progress(progress, page_index, total, "layout")
+    page_image = _rasterise_page_from_document(document, page_index, dpi=dpi)
+    detected = list(layout_detector.detect(page_image, page_index))
     transcribed: list[Region] = []
-    for region in detected:
+    # Issue #18 RC#2: emit a per-region progress event before each
+    # OCR call so a long CPU run shows visible progress instead of
+    # appearing to hang. Encoded into the event string so the
+    # ``ProgressCallback`` signature stays stable.
+    n_regions = len(detected)
+    for idx, region in enumerate(detected, start=1):
+        role_name = region.role.value
+        _emit_progress(progress, page_index, total, f"region:{idx}/{n_regions}:{role_name}")
         if region.role is RegionRole.FIGURE:
             transcribed.append(region)
             continue

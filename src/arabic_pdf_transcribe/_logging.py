@@ -42,9 +42,12 @@ class ProgressEvent:
 
     page: int  # 1-based
     of: int  # total page count
-    event: str  # "start" | "complete" | "failure" | "summary"
+    event: str  # "start" | "complete" | "failure" | "summary" | "layout" | "region"
     branch: str | None = None  # "native" | "ml" | None
     reason: str | None = None  # populated on failure / summary
+    region: int | None = None  # 1-based region index within page (issue #18)
+    of_regions: int | None = None  # region count within page
+    role: str | None = None  # region role label, e.g. "PARAGRAPH"
 
 
 class ProgressLogger:
@@ -102,15 +105,37 @@ class ProgressLogger:
             )
         )
 
+    def layout(self, *, page: int, of: int) -> None:
+        """Page entered the ML layout-detection step (issue #18)."""
+        self.emit(ProgressEvent(page=page, of=of, event="layout"))
+
+    def region(self, *, page: int, of: int, region: int, of_regions: int, role: str) -> None:
+        """One OCR region is about to run (issue #18 progress visibility)."""
+        self.emit(
+            ProgressEvent(
+                page=page,
+                of=of,
+                event="region",
+                region=region,
+                of_regions=of_regions,
+                role=role,
+            )
+        )
+
 
 def _event_to_dict(event: ProgressEvent) -> Mapping[str, object]:
-    return {
+    payload: dict[str, object] = {
         "page": event.page,
         "of": event.of,
         "event": event.event,
         "branch": event.branch,
         "reason": event.reason,
     }
+    if event.event == "region":
+        payload["region"] = event.region
+        payload["of_regions"] = event.of_regions
+        payload["role"] = event.role
+    return payload
 
 
 def _format_text(event: ProgressEvent) -> str:
@@ -124,6 +149,10 @@ def _format_text(event: ProgressEvent) -> str:
         return f"{page_n} — complete ({event.branch})"
     if event.event == "failure":
         return f"{page_n} — FAILED: {event.reason}"
+    if event.event == "layout":
+        return f"{page_n} — layout (ml)"
+    if event.event == "region":
+        return f"{page_n} — region {event.region}/{event.of_regions} ({event.role})"
     return f"{page_n} — {event.event}"  # pragma: no cover — defensive
 
 

@@ -1,0 +1,24 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: The main fix looks well targeted, but the new device-precedence behavior is inconsistent with the documented/claimed CLI contract and the PR is missing required review hygiene artifacts.
+CONFIDENCE: MEDIUM
+---
+KEY_ISSUES:
+- `--device` does not actually act as a global override. In `src/arabic_pdf_transcribe/cli.py:443-459` the CLI/runtime value is resolved first, but `_maybe_build_ml_adapters()` at `src/arabic_pdf_transcribe/cli.py:545-559` preserves `[layout].device` / `[ocr].device` when present. That means `--device cpu` can fail to force CPU if a per-section device is set, which contradicts the PR description and weakens the intended “escape hatch” for OOM/debugging.
+- The docs currently contradict the implementation: `README.md:127-129` says `--device cuda` should “fail loudly” when CUDA is missing, but `src/arabic_pdf_transcribe/_device.py:29-31,47-51` logs a warning and falls back to CPU instead.
+- The expected bugfix review document is missing. I do not see a `codev/reviews/18-*.md` file, while prior bugfixes (for example `codev/reviews/16-real-arabic-pdf-still-fails-after-v0-1-2.md`) do include one.
+- Commit formatting is not aligned with the repo instructions. The branch contains commits like `Fix #18: GPU device + per-region progress + bounded OCR decode` and `chore(porch): ...`, not the documented `[Spec ...][Phase ...]` style.
+
+PR_SUMMARY: |
+  ## Summary
+  This PR addresses issue #18 by wiring device placement into the HF layout/OCR adapters, adding visible per-region progress events, and tightening OCR decoding defaults to reduce runaway generation on difficult Arabic crops.
+
+  ## Key Changes
+  - Added shared device resolution plus model/input movement for both HF adapters, with CUDA→CPU fallback on runtime OOM.
+  - Added layout/region progress events to the pipeline and logger, including JSON log support.
+  - Lowered OCR `max_new_tokens` and added repetition controls; exposed runtime device selection through CLI/config and documented the new behavior.
+
+  ## Test Plan
+  - Run `make lint`.
+  - Run the regression suite, especially `tests/test_issue_18_regression.py`.
+  - Manually verify `--device cpu|cuda|auto` precedence against config combinations, including per-section `[layout]/[ocr].device` values.

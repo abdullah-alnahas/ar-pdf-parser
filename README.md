@@ -95,16 +95,56 @@ max_presentation_form_ratio = 0.5
 [layout]
 pixel_confidence = 0.5
 min_region_area_px = 64
+# device = "auto"  # "auto" (default), "cuda", or "cpu" — overrides [runtime].device
 
 [ocr]
-max_new_tokens = 4096
+# Issue #18: lowered from 4096 to bound CPU runaway generation
+# (still > 3x a typical Arabic paragraph's tokenisation).
+max_new_tokens = 1024
 num_beams = 1
+no_repeat_ngram_size = 3   # break repetition loops on adversarial crops
+repetition_penalty = 1.05  # mild penalty; deterministic with greedy decode
+# device = "auto"
 
 [render]
 dpi = 200
+
+[runtime]
+# Issue #18: ML inference device. "auto" picks CUDA when
+# torch.cuda.is_available() is true, else CPU. Overridable per-adapter
+# via [layout].device / [ocr].device, or globally via the --device CLI
+# flag (which wins over the config file).
+device = "auto"
 ```
 
 The CLI's `--dpi` flag wins over `[render].dpi` when both are given.
+The CLI's `--device {auto,cuda,cpu}` flag wins over `[runtime].device`.
+
+### GPU acceleration
+
+By default the ML adapters run on CUDA when `torch.cuda.is_available()`
+is true (50-100x faster than CPU on a typical Arabic page). Force a
+specific device with `--device cpu` (e.g. when CUDA OOM'd) or
+`--device cuda` (when auto-detection misses, e.g. on ROCm builds).
+The CLI flag overrides every config layer including per-section
+`[layout].device` / `[ocr].device` — it is the documented escape hatch
+for "force CPU now" / "force CUDA now".
+
+If `--device cuda` is requested but `torch.cuda.is_available()` is
+false, the adapter logs a one-line warning and falls back to CPU
+rather than aborting the run.
+
+If a CUDA OOM fires mid-run, the adapter logs a one-line warning and
+downgrades itself to CPU for the remainder of the document — no
+process restart needed.
+
+### Progress under `--json-logs`
+
+Every region the OCR branch processes emits a `{event:"region", ...}`
+line on stderr (`{"page":2,"of":12,"event":"region","region":3,"of_regions":15,"role":"PARAGRAPH"}`).
+This makes a long CPU run visibly distinct from a hung one. The same
+information renders as `page X of N — region i/R (ROLE)` in default
+text mode.
 
 ## Library usage
 

@@ -1,0 +1,62 @@
+Now let me verify tests pass and check actual source files for context:One issue: pipeline.py still has its own `_is_cuda_oom` at line 382. Let me check where it's used:Good. Now I have full picture. Here's my review:
+
+---
+
+## PR #19 Review — Fix #18: GPU device + per-region progress + bounded OCR decode
+
+### Overall
+
+Well-executed bugfix. Three root causes identified correctly, all addressed with appropriate scope. Shared `_device.py` module is clean. Tests comprehensive (19 new). Review document exists. Iter-2 addressed prior reviewer feedback.
+
+### Issues
+
+#### 🟡 `pipeline._is_cuda_oom` still diverges from `_device.is_cuda_oom`
+
+`pipeline.py:382` has a strict-only check (class name + module prefix). `_device.py:82` adds string-fallback heuristic for older PyTorch. Pipeline doesn't import from `_device.py`.
+
+In practice: if a CUDA OOM on PyTorch <2.x arrives as a plain `RuntimeError` with "CUDA out of memory" in the message, adapters catch it (via `_device.is_cuda_oom`) and downgrade to CPU. But if OOM escapes to the pipeline level (e.g. during rasterisation?), `pipeline._is_cuda_oom` misses it → treated as generic failure rather than CUDA OOM.
+
+**Impact: LOW.** Both adapters now handle OOM internally before it propagates to pipeline. The pipeline's version only fires if something unexpected raises OOM outside adapter code. Mentioned in iter-1 review and explicitly deferred ("out of bugfix scope; pipeline does not need the string-fallback heuristic" — review doc line 346). Acceptable trade.
+
+#### 🟢 `contextlib.suppress(Exception)` on `switch()` in `place_model`
+
+Line 117 of `_device.py` — the `eval()` call uses a blanket suppress. Noted but pragmatically fine: `eval()` on a properly loaded `nn.Module` never raises in practice, and this is `pragma: no cover` stub-only territory.
+
+#### 🟢 Minor: f-string lint change in `test_issue_16_regression.py`
+
+Lines 227-229 of the old test file got reformatted (implicit string concat). Cosmetic, no behavioral change. Fine.
+
+### What's Good
+
+- `_device.py` as shared module — clean, well-documented, lazy torch import
+- `place_model` logs on failure instead of silent `contextlib.suppress` (iter-1 feedback addressed)
+- `_generate_kwargs()` extracted → single source of truth for decode params (DRY fix from iter-1)
+- `_resolve_device` returns `(value, cli_override)` tuple — clean precedence semantics
+- `force_device` flag correctly overrides per-section config (codex iter-1 feedback fixed)
+- Tests don't need GPU/model downloads — pure stubs
+- Review document is thorough with CMAP verdicts and lessons learned
+
+---
+VERDICT: APPROVE
+SUMMARY: Solid 3-RC bugfix; iter-2 addressed all material review feedback; residual pipeline._is_cuda_oom divergence is explicitly deferred and low-risk
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- None blocking. `pipeline._is_cuda_oom` divergence is documented as intentionally deferred.
+
+PR_SUMMARY: |
+  ## Summary
+  Fixes #18: ML inference on CUDA-equipped hosts hung silently due to three root causes — models never moved to GPU, no per-region progress visibility, and unbounded OCR generation loops (4096 tokens with no repetition controls).
+
+  ## Key Changes
+  - New `_device.py` shared module: `resolve_device`, `place_model`, `move_inputs_to_device`, `is_cuda_oom`
+  - Both HF adapters call `model.to(device)` + move inputs; CUDA OOM mid-run auto-downgrades to CPU
+  - Pipeline emits `layout` and `region:{i}/{n}:{role}` progress events before each ML call
+  - `OCRConfig` defaults: `max_new_tokens=1024`, `no_repeat_ngram_size=3`, `repetition_penalty=1.05`
+  - New `--device {auto,cuda,cpu}` CLI flag with proper TOML precedence chain (`CLI > [runtime] > per-section > "auto"`)
+
+  ## Test Plan
+  - 19 regression tests in `test_issue_18_regression.py` (device resolution, model/input placement, generate kwargs, progress events, CLI parsing, config precedence)
+  - Full suite: 453 passed, lint clean
+  - No model downloads or GPU required — stubs only
