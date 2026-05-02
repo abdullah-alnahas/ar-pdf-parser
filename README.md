@@ -52,7 +52,26 @@ arabic-pdf-transcribe FILE --strict                       # abort on first failu
 arabic-pdf-transcribe FILE --json-logs                    # structured stderr
 arabic-pdf-transcribe FILE --debug-json sidecar.json      # per-region confidences
 arabic-pdf-transcribe FILE --config tunings.toml          # validator/layout/ocr/render
+arabic-pdf-transcribe --prefetch-models                   # download ML weights into HF cache
 ```
+
+### Prefetching ML weights
+
+The `[ml]` extra installs `transformers` / `torch` but does **not** download
+the layout + OCR weights. The first page that routes to the ML branch
+triggers a multi-gigabyte HF download; if you are offline (or want
+predictable behaviour), prefetch the weights up front:
+
+```bash
+arabic-pdf-transcribe --prefetch-models
+```
+
+The command resolves the layout (`cmarkea/dit-base-layout-detection`)
+and OCR (`stepfun-ai/GOT-OCR-2.0-hf`) models pinned in `models.toml`,
+populates the local Hugging Face cache, and exits 0. A `--config`
+override is honoured. If the weights are missing at run time (e.g. you
+ran a page through ML without prefetching first), the CLI fails with
+exit code 5 and points you back at this command.
 
 ### Exit codes
 
@@ -71,6 +90,7 @@ arabic-pdf-transcribe FILE --config tunings.toml          # validator/layout/ocr
 min_arabic_ratio = 0.5
 max_replacement_ratio = 0.05
 max_word_boundary_kl = 1.0
+max_presentation_form_ratio = 0.5
 
 [layout]
 pixel_confidence = 0.5

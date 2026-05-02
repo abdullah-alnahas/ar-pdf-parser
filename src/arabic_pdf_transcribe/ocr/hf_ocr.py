@@ -165,9 +165,9 @@ class HFGotOCRTranscriber:
         except Exception as exc:  # pragma: no cover — exercised in slow test
             raise ModelDownloadError(
                 f"failed to load OCR model {self.config.model}@{self.config.revision[:12]}; "
-                f"if running offline, prefetch with: "
-                f"huggingface-cli download {self.config.model} --revision {self.config.revision}. "
-                f"({exc})"
+                f"prefetch the weights with: arabic-pdf-transcribe --prefetch-models "
+                f"(or, manually: huggingface-cli download {self.config.model} "
+                f"--revision {self.config.revision}). ({exc})"
             ) from exc
 
     def transcribe(self, region: Region, page_image: PILImage) -> Region:

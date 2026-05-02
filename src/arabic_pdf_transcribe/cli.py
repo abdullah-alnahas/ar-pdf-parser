@@ -12,6 +12,7 @@ Command surface (per spec "Resolved Decisions" + plan phase 8):
         [--debug-json PATH]
         [--max-workers N]
         [--dpi N]
+    arabic-pdf-transcribe --prefetch-models [--config PATH]
 
 Exit codes (mapped one-to-one to spec test scenarios 11-18):
 
@@ -73,7 +74,18 @@ def build_parser() -> argparse.ArgumentParser:
         prog="arabic-pdf-transcribe",
         description="Arabic-first PDF transcriber: extract → layout → ML fallback → MD/Word.",
     )
-    parser.add_argument("input", type=Path, help="path to a PDF file")
+    parser.add_argument(
+        "input",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="path to a PDF file (omit when using --prefetch-models)",
+    )
+    parser.add_argument(
+        "--prefetch-models",
+        action="store_true",
+        help="download ML layout + OCR weights into the local HF cache, then exit",
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -279,6 +291,12 @@ def _resolve_max_workers(value: str) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     ns = parser.parse_args(argv)
+    if ns.prefetch_models:
+        if ns.input is not None:
+            parser.error("--prefetch-models does not accept an input file; pass it on its own")
+        return _prefetch_models(_load_config_doc(ns.config))
+    if ns.input is None:
+        parser.error("the following arguments are required: input (or pass --prefetch-models)")
     try:
         args = validate_args(ns)
     except FormatExtensionMismatch as exc:
@@ -388,6 +406,64 @@ def _resolve_dpi(cli_dpi: int | None, doc: dict[str, object]) -> int:
         if isinstance(value, int) and value > 0:
             return value
     return 200
+
+
+def _prefetch_models(config_doc: dict[str, object]) -> int:
+    """Download layout + OCR weights into the HF cache and return an exit code.
+
+    Run before any offline use of the ML branch. Prints a one-line status
+    per model on stderr so the user sees progress; emits a clear actionable
+    error on failure pointing at the same flag.
+    """
+    try:
+        from arabic_pdf_transcribe.layout.hf_detector import HFLayoutDetectorConfig
+        from arabic_pdf_transcribe.ocr.hf_ocr import OCRConfig
+    except ImportError as exc:
+        print(
+            f"error: --prefetch-models requires the [ml] extra; "
+            f"install with: pip install 'arabic-pdf-transcribe[ml]' ({exc})",
+            file=sys.stderr,
+        )
+        return EXIT_MODEL_MISSING
+    try:
+        from transformers import (  # type: ignore[import-not-found]
+            AutoImageProcessor,
+            AutoModelForImageTextToText,
+            AutoModelForSemanticSegmentation,
+            AutoProcessor,
+        )
+    except ImportError as exc:
+        print(
+            f"error: transformers is required for --prefetch-models; "
+            f"install the [ml] extra: pip install 'arabic-pdf-transcribe[ml]'. ({exc})",
+            file=sys.stderr,
+        )
+        return EXIT_MODEL_MISSING
+    layout_cfg = HFLayoutDetectorConfig.from_mapping(config_doc.get("layout"))
+    ocr_cfg = OCRConfig.from_mapping(config_doc.get("ocr"))
+    targets = (
+        (
+            "layout",
+            layout_cfg.model,
+            layout_cfg.revision,
+            AutoImageProcessor,
+            AutoModelForSemanticSegmentation,
+        ),
+        ("ocr", ocr_cfg.model, ocr_cfg.revision, AutoProcessor, AutoModelForImageTextToText),
+    )
+    for label, model_id, revision, processor_cls, model_cls in targets:
+        print(f"prefetching {label} model {model_id}@{revision[:12]}", file=sys.stderr)
+        try:
+            processor_cls.from_pretrained(model_id, revision=revision)
+            model_cls.from_pretrained(model_id, revision=revision)
+        except Exception as exc:
+            print(
+                f"error: failed to prefetch {label} model {model_id}@{revision[:12]}: {exc}",
+                file=sys.stderr,
+            )
+            return EXIT_MODEL_MISSING
+    print("prefetch complete; the ML branch can now run offline.", file=sys.stderr)
+    return EXIT_OK
 
 
 def _maybe_build_ml_adapters(

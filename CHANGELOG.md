@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Validator false-accept on broken text layers (issue #14)**: real
+  Arabic PDFs (Foulabook-class) often serialize font-specific glyph IDs
+  as raw ASCII control codepoints (\x01..\x1F). The original three
+  signals all abstained on this failure mode (no Arabic letters → arabic
+  gate skipped; control bytes were treated as ASCII punctuation →
+  replacement gate abstained; KL stayed under threshold). The
+  `replacement_glyph_ratio` signal now counts ASCII control bytes
+  (excluding the standard whitespace controls) as replacement glyphs,
+  so such pages route to the ML branch.
+- **Validator: visual-order / presentation-form text layers**: a 4th
+  signal `presentation_form_ratio` flags pages whose Arabic body is
+  overwhelmingly shaped glyphs (FB50–FDFF, FE70–FEFF) rather than
+  logical-order base codepoints. Threshold tunable via
+  `[validator].max_presentation_form_ratio`.
+- Synthesised regression fixture
+  `tests/fixtures/pdfs/digital-broken/broken-glyph-id-layer.pdf` mimics
+  the Foulabook failure mode without committing copyrighted content.
+
+### Added
+
+- **`--prefetch-models` CLI flag (issue #14)**: downloads the layout +
+  OCR weights into the local Hugging Face cache and exits, so offline
+  / cache-miss runs no longer fail mid-pipeline. Honours `--config`.
+  `ModelDownloadError` messages now reference the flag explicitly.
+
 ## [0.1.1] - 2026-05-02
 
 ### Fixed

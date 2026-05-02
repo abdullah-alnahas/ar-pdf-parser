@@ -226,6 +226,82 @@ def _build_broken_replacement_glyphs() -> None:
     c.save()
 
 
+def _build_broken_glyph_id_layer() -> None:
+    """Phase-bugfix-14 broken fixture: text layer is raw glyph IDs.
+
+    Mimics the failure mode of OCR'd-then-republished Arabic books
+    (Foulabook is a known offender). The PDF visually renders Arabic
+    body text, but its text layer carries font-specific glyph
+    identifiers in the ASCII control range (\\x01..\\x1F) plus bogus
+    Latin runs. Reportlab silently rewrites control bytes to U+25A0,
+    so this fixture is built by writing a minimal PDF directly.
+
+    The validator must reject every page in this fixture.
+    """
+    out = DIGITAL_BROKEN / "broken-glyph-id-layer.pdf"
+    pdf = _raw_pdf_with_control_text(
+        # 6 lines, each containing a ~60-char run of bogus glyph IDs
+        # (mostly control bytes + a few visible ASCII letters).
+        lines=[
+            bytes(range(1, 16)) + b"abcd" + bytes(range(1, 12)) + b" PXxyz" + bytes(range(1, 6)),
+            bytes(range(1, 12)) + b" Mqzd" + bytes(range(1, 14)) + b" lpt" + bytes(range(1, 8)),
+            bytes(range(1, 10)) + b"BcdEFG " + bytes(range(1, 16)) + b" RSTU" + bytes(range(1, 6)),
+            bytes(range(1, 14)) + b" ZyxK" + bytes(range(1, 10)) + b" mnPq" + bytes(range(1, 6)),
+            bytes(range(1, 8)) + b"AbCdEf " + bytes(range(1, 16)) + b" GHIJ" + bytes(range(1, 8)),
+            bytes(range(1, 12)) + b"  XYZw" + bytes(range(1, 14)) + b" QrSt" + bytes(range(1, 6)),
+        ]
+    )
+    out.write_bytes(pdf)
+
+
+def _raw_pdf_with_control_text(*, lines: list[bytes]) -> bytes:
+    """Build a one-page PDF whose text stream contains raw control bytes.
+
+    Bypasses reportlab so the codepoints survive into the rendered text
+    layer verbatim. The byte stream is constructed in PostScript-style
+    PDF content syntax with hex-string Tj operators, since hex-strings
+    accept any byte value.
+    """
+
+    def _hex(byts: bytes) -> bytes:
+        return b"<" + byts.hex().encode("ascii") + b">"
+
+    content_lines = [b"BT", b"/F1 12 Tf", b"72 720 Td"]
+    for idx, line in enumerate(lines):
+        if idx > 0:
+            content_lines.append(b"0 -16 Td")
+        content_lines.append(_hex(line) + b" Tj")
+    content_lines.append(b"ET")
+    content = b"\n".join(content_lines) + b"\n"
+
+    objs: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length "
+        + str(len(content)).encode("ascii")
+        + b" >>\nstream\n"
+        + content
+        + b"endstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets: list[int] = []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode("ascii") + body + b"\nendobj\n"
+    xref_pos = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n".encode("ascii")
+    out += b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode("ascii")
+    out += f"trailer << /Size {len(objs) + 1} /Root 1 0 R >>\n".encode("ascii")
+    out += f"startxref\n{xref_pos}\n%%EOF\n".encode("ascii")
+    return bytes(out)
+
+
 def _build_image_scan() -> None:
     """Phase-4 image-scan fixture: a synthetic page whose text is rendered
     as a flat raster image embedded in the PDF (no text layer at all).
@@ -447,6 +523,7 @@ def main() -> int:
     real_arabic = _build_real_arabic()
     _build_broken_mojibake()
     _build_broken_replacement_glyphs()
+    _build_broken_glyph_id_layer()
     _build_image_scan()
     _build_image_scan_extra(
         "scan-ar-2col.pdf",
@@ -481,6 +558,7 @@ def main() -> int:
         [
             "digital-broken/mojibake.pdf",
             "digital-broken/replacement-glyphs.pdf",
+            "digital-broken/broken-glyph-id-layer.pdf",
             "image-scan/scan-ar-1col.pdf",
             "image-scan/scan-ar-2col.pdf",
             "image-scan/scan-ar-headings.pdf",
