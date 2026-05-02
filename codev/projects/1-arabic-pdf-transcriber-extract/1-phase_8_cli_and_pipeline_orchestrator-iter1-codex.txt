@@ -1,0 +1,11 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Phase 8 is close, but several planned CLI/orchestrator contracts are still not actually implemented.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- `--pages` is filtered too late. The plan requires skipped pages to do “no work” before extraction, but `transcribe()` materializes `list(extract_native(pdf_path))` for the whole PDF before filtering (`src/arabic_pdf_transcribe/pipeline.py:187-189`, `src/arabic_pdf_transcribe/pipeline.py:209-220`).
+- `--max-workers` and most config wiring are effectively dead. The CLI parses and stores `max_workers` (`src/arabic_pdf_transcribe/cli.py:163-175`), but `transcribe()` has no `max_workers` parameter (`src/arabic_pdf_transcribe/pipeline.py:141-155`) and `main()` never passes it (`src/arabic_pdf_transcribe/cli.py:301-310`). Likewise `--config` only loads `ValidatorConfig` (`src/arabic_pdf_transcribe/cli.py:342-345`), not the planned layout/OCR/render overrides or env-based equivalents.
+- `--format docx` without `-o` will raise uncaught `FormatExtensionMismatch` during output writing instead of returning a clean exit code. The exception is raised in `_write_output()` (`src/arabic_pdf_transcribe/cli.py:381-384`) after `main()` has already left its exception-handling block (`src/arabic_pdf_transcribe/cli.py:301-339`).
+- OOM handling is incomplete versus the phase plan. The orchestrator only catches `MemoryError` (`src/arabic_pdf_transcribe/pipeline.py:301-308`), not `torch.cuda.OutOfMemoryError`, so GPU OOMs won’t be mapped to the required strict/best-effort behavior.

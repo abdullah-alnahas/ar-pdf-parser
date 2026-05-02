@@ -1,0 +1,9 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Phase 4 is close, but the layout adapter does not fulfill the plan’s required table-grid fallback contract for detected table regions.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- `src/arabic_pdf_transcribe/layout/hf_detector.py:223-239` can emit `RegionRole.TABLE` with `table_grid=None` whenever `detect_table_cells(...)` fails. That conflicts with the phase-4 deliverable in `codev/plans/1-arabic-pdf-transcriber-extract.md:225-226`, which requires complex tables to fall back to one-cell-per-row coalescing, and with the protocol contract in `src/arabic_pdf_transcribe/layout/__init__.py:36-38`, which says table regions are responsible for filling `table_grid`. This needs an actual fallback grid, not `None`.
+- Tests currently miss this contract gap: there is good unit coverage for `_table_cells`, but no adapter-level test proving that a detected `Table` class always returns a `Region` with a populated `table_grid` even when morphology cannot recover a full grid.

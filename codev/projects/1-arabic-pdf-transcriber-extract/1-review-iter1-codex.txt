@@ -1,0 +1,23 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: The docs themselves are solid, but this PR is not repo-ready because it commits a generated status file with absolute local paths and the review references phase artifacts that are not actually tracked.
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- `codev/projects/1-arabic-pdf-transcriber-extract/status.yaml` should not ship as-is. It embeds absolute machine-specific paths like `/home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/...`, which are non-portable, stale on merge, and leak local workspace structure.
+- `codev/reviews/1-arabic-pdf-transcriber-extract.md` says “See per-phase rebuttals files under codev/projects/1-arabic-pdf-transcriber-extract/”, but those rebuttal/consultation files are not tracked in git on this branch (`git ls-files` shows only `status.yaml` under that directory). That leaves broken references for future readers.
+- Test status could not be independently re-run in this environment: `pytest -q` fails before collection because there is no usable temp directory in the sandbox. I don’t see evidence of source regressions, but the “410 passed, 3 deselected” claim remains unverified from this review pass.
+
+PR_SUMMARY: |
+  ## Summary
+  This PR adds the final SPIR review deliverables for Spec 1: the review document, a project-level architecture map, and a lessons-learned document for v0.1.0. It is documentation/process focused and does not change application source code.
+
+  ## Key Changes
+  - Added `codev/reviews/1-arabic-pdf-transcriber-extract.md` with spec compliance, deviations, lessons, and consultation summaries.
+  - Added `codev/resources/arch.md` documenting subsystem boundaries, data flow, invariants, and config surface.
+  - Added `codev/resources/lessons-learned.md` capturing reusable engineering and SPIR process takeaways.
+
+  ## Test Plan
+  - Review rendered Markdown for the three new documents.
+  - Remove or sanitize generated/status artifacts before merge.
+  - Re-run the existing suite in a normal environment and confirm the documented `410 passed, 3 deselected` result.

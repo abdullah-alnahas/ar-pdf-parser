@@ -1,0 +1,123 @@
+Let me read the actual files from disk before reviewing.Good, both files read. Now let me cross-check spec coverage systematically.
+
+## Plan Review: Arabic PDF Transcriber
+
+### 1. Spec Coverage — Thorough
+
+**All spec requirements covered:**
+- ✅ Approach 1 (layered, page-gated pipeline) — correctly chosen
+- ✅ Native-first short-circuit (phases 2-3)
+- ✅ Layout detection + OCR (phases 4-5)
+- ✅ RTL reading order (phase 6)
+- ✅ Markdown + Word emitters (phase 7)
+- ✅ CLI surface with all exit codes (phase 8)
+- ✅ All 18 functional test scenarios mapped to phases
+- ✅ Benchmark corpus (phase 9)
+- ✅ License audit (phase 1, enforced throughout)
+- ✅ Library API with explicit stages (phase 8 `pipeline.py`)
+- ✅ Validator shape matches spec's "all three must agree" rule
+- ✅ Semantic output contract (RegionRole enum matches spec exactly)
+- ✅ Failure behaviour + exit codes 0/2/3/4/5
+- ✅ Format selection logic
+- ✅ Progress reporting (--quiet, --json-logs)
+- ✅ Temp file lifecycle
+- ✅ Performance floors referenced in success metrics
+- ✅ Reproducibility (native byte-identical, ML CER ≤ 0.05)
+- ✅ Security (safe pypdfium2 defaults, no JS, escape-safe emitters)
+- ✅ Model pinning by revision hash
+
+**No phases exceed spec scope.** Everything maps cleanly.
+
+### 2. Phase Breakdown — Well-Structured
+
+Phase sizes appropriate. Each independently committable. Dependency graph correct — phases 3/4 can parallel after phase 2. Good pragmatic call putting reorder (phase 6) after both extraction branches exist.
+
+One observation on sizing: **Phase 8 is the heaviest phase** — CLI + pipeline orchestrator + error handling + format selection + progress + temp lifecycle + failure synthesis. It's the integration hub. Acceptable given each piece is well-specified and independently testable, but builder should be aware.
+
+### 3. Technical Approach — Sound
+
+**Strengths:**
+- `Region` as frozen dataclass with `with_*` helpers — good immutability choice
+- Protocol-based adapters for layout/OCR — enables stub injection, future swaps
+- Lazy imports for torch/transformers — critical for native-path speed
+- Iterator-shaped pipeline — bounded memory on large docs
+- `src/` layout — catches packaging bugs in CI
+- Coordinate system normalization at boundary (BL→TL) — prevents systemic bugs
+
+**Minor issues found:**
+
+1. **`errors.py` deferred to phase 8 but needed earlier.** Phase 4 mentions `ModelDownloadError`, phase 5 mentions `OCRTranscriptionError`. These exceptions should either exist as stubs by phase 4 or `errors.py` should land in phase 2 alongside the core types. Currently the dependency is implicit — builder will figure it out, but plan should note it.
+
+2. **Heading-level spec inconsistency in phase 6.** Phase 6 acceptance criteria says "no font-size info produces all headings at H2" — matches spec. But implementation details say "collapsed to H3 if the page has only `unknown` font-size data." These contradict. Spec says **H2** for absent font-size. Plan should pick one; spec wins.
+
+3. **`--pages` flag mentioned in phase 8 CLI but not in phase 8 implementation details.** The pipeline is iterator-shaped per-page — page-range filtering needs explicit mention in the orchestrator flow (skip pages outside range before extraction).
+
+4. **`--max-workers` mentioned in phase 5 risk mitigation but not in phase 8 deliverables.** If parallelism is a performance strategy, the CLI should expose it. Either add to phase 8 CLI surface or explicitly defer.
+
+5. **Spec mentions `--config PATH` in CLI surface (phase 8)** — but no discussion of what config file format or contents are. `ValidatorConfig` round-trips to TOML (phase 3) — is `--config` a path to that? Or a broader config covering model paths, DPI, etc.? Builder needs clarity.
+
+6. **Resource ceiling (8 GB RSS)** from spec — not explicitly tested anywhere. Phase 9 has perf smoke but no memory assertion. Minor, not blocking.
+
+### 4. Testability — Strong
+
+Each phase has clear, specific acceptance criteria. Test plans separate unit/integration/manual appropriately. Good decisions:
+- Mocked ML adapters for unit tests
+- `@pytest.mark.slow` for real-model tests
+- Nightly CI for heavy tests, PR CI for stubs
+- Snapshot tests for deterministic paths, CER for ML
+- Adversarial inputs in emitter tests
+
+**One gap:** Spec test scenario 2 ("clean digital **mixed Arabic/Latin** PDF") — not explicitly claimed by any phase's test plan. Phase 2's fixture is Arabic-only (`lorem-ar-2col.pdf`). A mixed-script fixture should land somewhere (phase 2 or phase 9 corpus).
+
+**One concern:** E2E tests in phase 9 use CER ≤ 0.10, but spec success criteria says CER ≤ 0.05. Plan's phase 9 should match spec's tighter bound, or document why the relaxation.
+
+### 5. Risk Assessment — Comprehensive
+
+Risks well-identified with concrete mitigations. Good catches:
+- Torch pinning vs CPU/CUDA wheel split
+- License metadata inconsistency
+- Validator threshold overfitting
+- Column detection marginalia confusion
+- Iterator vs Iterable composability
+
+**Missing risk:** Phase 4/5 each embed a research step (model selection). If the best candidates turn out poorly on Arabic during benchmarking, there's no fallback plan beyond "pick the next one." The risk is acknowledged but the mitigation is thin — practically fine for a solo maintainer who can iterate, but worth flagging.
+
+### 6. Dependency Map Discrepancy
+
+The dependency diagram shows Phase 4 depending directly on Phase 1 (not Phase 2). But Phase 4's listed dependency is "Phase 2 (Region schema)." The diagram is wrong — Phase 4 needs `Region` from Phase 2. Text is correct, diagram misleading. Minor — builder will follow text, not diagram.
+
+### 7. Open Questions from Spec
+
+Spec has 6 "Important" open questions still unchecked. Plan implicitly resolves several:
+- Tables → basic grid (plan follows spec proposal)
+- Figures → placeholder, no OCR (plan follows)
+- CLI surface → matches proposal
+- Confidence → `--debug-json` (plan follows)
+
+But **handwritten Arabic** and **target Arabic varieties** are unresolved. Plan proceeds as if "printed Arabic, MSA + Classical" — reasonable default, but plan should state this assumption explicitly so builder doesn't second-guess during model selection (phases 4-5).
+
+---
+
+## Summary of Issues
+
+| # | Severity | Issue |
+|---|----------|-------|
+| 1 | Minor | `errors.py` needed before phase 8 — phase 4/5 reference exceptions defined there |
+| 2 | Minor | Phase 6 heading-level contradicts itself (H2 vs H3 for missing font-size) — spec says H2 |
+| 3 | Minor | CER tolerance mismatch: phase 9 uses 0.10, spec says 0.05 |
+| 4 | Minor | Mixed Arabic/Latin fixture not covered until phase 9 (spec test #2) |
+| 5 | Trivial | Dependency diagram shows P4→P1 but should be P4→P2 |
+| 6 | Trivial | `--max-workers` and `--config` CLI flags underspecified |
+| 7 | Trivial | Spec open questions (handwriting, Arabic varieties) should be explicitly closed in plan assumptions |
+
+None of these are blocking. A builder reading this plan would succeed. Issues 1-3 are worth fixing before execution to avoid confusion mid-build.
+
+---
+VERDICT: COMMENT
+SUMMARY: Excellent plan with complete spec coverage, sound architecture, and thorough testing — three minor internal inconsistencies to resolve before builder starts (heading-level contradiction, CER tolerance mismatch, error module timing)
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- Phase 6 says "collapsed to H3" for absent font-size but spec and phase 6 acceptance criteria both say H2 — fix implementation details to match
+- Phase 9 E2E uses CER ≤ 0.10 but spec success criteria requires ≤ 0.05 — reconcile or document why relaxed
+- `errors.py` deferred to phase 8 but phases 4-5 reference `ModelDownloadError` and `OCRTranscriptionError` — either create the module earlier or note the forward-reference

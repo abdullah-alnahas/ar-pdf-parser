@@ -1,0 +1,104 @@
+Let me read the actual files to verify context before reviewing.Let me check status and protocol context.Good. Spec read, issue read, status confirmed. Here's my review.
+
+---
+
+## Specification Review
+
+### 1. Completeness — **Strong**
+
+Spec covers problem statement, three PDF flavours, pipeline architecture, success criteria, constraints, risks, non-goals, and test scenarios. Well-bounded scope.
+
+**What's good:**
+- Clear three-flavour taxonomy (clean digital, broken digital, image-only)
+- Native-first contract explicitly stated and non-negotiable
+- Open questions properly triaged into Critical / Important / Nice-to-Know
+- Non-goals list comprehensive and sensible
+- Performance targets realistic with appropriate caveats ("target floors, not SLAs")
+
+**Gaps:**
+- **No error-reporting contract.** What happens when pipeline fails mid-document? Partial output + error? Abort? Per-page error collection? This matters for 500-page scans where page 247 fails.
+- **No progress/logging contract.** Long-running ML on 100-page scans — user needs feedback. Spec should state whether progress reporting is in scope (even just stderr logging).
+- **Missing: encoding of output format from `-o` flag.** Spec shows `-o output.md` — is format inferred from extension? What about stdout? Spec says "emits Markdown to stdout or a file" but doesn't specify how format is chosen (flag vs. extension vs. default).
+
+### 2. Correctness — **Strong**
+
+Pipeline diagram matches issue requirements. Approach 1 recommendation is sound — alternatives properly evaluated and rejected with reasons.
+
+**One tension:**
+- Success criterion says "byte-identical Markdown" for reproducibility. But the native path extracts bounding boxes from PDF internals, which may vary across `pdfplumber` vs `pypdfium2` versions. Reproducibility should be pinned to **library versions** too, not just model weights. Spec mentions model pinning but not PDF-library pinning. Minor — plan can handle — but worth noting.
+
+### 3. Feasibility — **Feasible with known risks**
+
+All risks properly identified. Main concern:
+
+- **Validator is the hardest novel component.** Spec proposes three signals (Arabic-codepoint ratio, replacement glyphs, word-boundary entropy). This is reasonable but "word-boundary entropy" is vague. What tokenizer defines word boundaries in Arabic text extracted from broken PDFs? This is acknowledged as needing plan-phase resolution — acceptable for spec level.
+
+- **8 GB RSS ceiling on CPU path** — tight if loading a layout detector + OCR model simultaneously. Feasible but constraining. Spec correctly identifies this.
+
+- **Scope is large for one spec** — extract + validate + layout + OCR + reorder + 2 emitters + CLI + library API. Ambitious but coherent because it's one pipeline. Would not split — pieces are meaningless alone.
+
+### 4. Clarity — **Strong**
+
+Builder would know what to build. Pipeline diagram is clear. Success criteria are testable. Library API surface is named.
+
+**Minor ambiguities:**
+- "Structured Markdown" — spec lists headings/paragraphs/lists/tables/figure-captions but doesn't specify heading-level detection strategy. Are all detected headings `##`? Does font-size drive level? This is plan-level, but spec could note "heading levels should reflect document hierarchy."
+- CLI name inconsistency: spec says `arabic-pdf-transcribe`, issue doesn't specify. Fine, but confirm with owner.
+
+### 5. Security — **Thorough**
+
+PDF attack surface, model supply chain, no-telemetry, output escaping — all covered. Good.
+
+One addition: **temp file cleanup.** Page rasterisation creates temp images. Spec should note cleanup requirement (no stale images left behind, especially in `/tmp` on shared systems).
+
+### 6. Testing — **Good coverage**
+
+10 functional + 6 non-functional scenarios cover the matrix. Missing:
+
+- **Empty PDF** (0 pages) — should produce empty output, not crash.
+- **Password-protected PDF** — should fail with clear error message.
+- **Huge single page** (poster/map) — memory behavior.
+- **RTL+LTR mixed within a single region** (e.g., Arabic paragraph with English citation) — reading direction within a block, not just block ordering.
+
+### 7. Open Questions Assessment
+
+Critical questions are correctly flagged. My take:
+
+| Question | Recommendation |
+|----------|---------------|
+| License | Default MIT. Decide now, unblocks everything. |
+| Validator shape | Proposed shape is good. Accept it, tune thresholds in plan. |
+| Model distribution | Download-on-first-use (HF cache default). Simplest, proven pattern. |
+| Handwritten | Confirm out of scope. Correct default. |
+| Tables | Basic grid only is right for v1. |
+
+**The "validator threshold" question is marked Critical but has a reasonable proposal inline.** Could be downgraded to Important — the shape is defined, only thresholds need tuning, and that's plan/research work.
+
+---
+
+## Summary of Issues
+
+| # | Severity | Issue |
+|---|----------|-------|
+| 1 | Medium | No error-handling contract for partial failures (page-level errors in multi-page docs) |
+| 2 | Low | No progress/logging spec for long-running ML paths |
+| 3 | Low | CLI format selection mechanism unspecified (extension inference vs. flag) |
+| 4 | Low | Missing edge-case test scenarios (empty PDF, password-protected, mixed bidi within region) |
+| 5 | Low | Temp file cleanup not mentioned |
+| 6 | Nit | Reproducibility should pin PDF-library versions, not just model weights |
+
+None of these are blockers. Issue #1 (error handling) is the most important — builder needs to know whether partial output is acceptable.
+
+---
+
+```
+---
+VERDICT: COMMENT
+SUMMARY: Excellent spec — thorough, well-structured, correctly scoped. Minor gaps in error-handling contract and edge-case coverage that can be addressed quickly or deferred to plan.
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- No error-handling contract for partial page failures in multi-page documents (recommend: add one sentence — "pages that fail produce a placeholder + warning; pipeline continues")
+- Missing test scenarios for empty PDF, password-protected PDF, and intra-region bidi mixing
+- CLI format selection mechanism (extension vs. flag) should be stated explicitly
+```

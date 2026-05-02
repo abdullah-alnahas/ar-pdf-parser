@@ -1,0 +1,72 @@
+I'll review phase 9 deliverables. Reading key files now.Now let me check status.yaml and models.toml for completeness, and verify the pyproject.toml console script entry.Let me run tests to verify green state.Good. All passing tests, docs exist, CLI entry wired. Now let me tally deliverables against plan.
+
+## Phase 9 Review
+
+### What's delivered ✅
+
+| Deliverable | Status |
+|---|---|
+| `*.expected.md` snapshots for digital-clean | ✅ 4 files |
+| `tests/test_e2e.py` — native-path byte-identical snapshots | ✅ parametrised |
+| `tests/test_e2e.py` — determinism (two runs identical) | ✅ |
+| `tests/test_e2e.py` — corrupted PDF exit 4 | ✅ |
+| `tests/test_e2e.py` — format-extension mismatch exit 4 | ✅ |
+| `tests/test_e2e.py` — Word output round-trip | ✅ |
+| `tests/_cer.py` — pure-Python CER implementation | ✅ |
+| `tests/test_cer.py` — CER unit tests (edge cases, Arabic) | ✅ |
+| `.github/workflows/ci.yml` — lint + test + audit | ✅ |
+| `.github/workflows/nightly.yml` — slow tests + HF cache | ✅ |
+| `README.md` — install, CLI, library, exit codes, models, Mermaid, security | ✅ |
+| `docs/architecture.md` — pipeline + module map | ✅ |
+| `docs/model-card.md` — per-model card with rationale | ✅ |
+| `CHANGELOG.md` — 0.1.0 entry | ✅ |
+| `LICENSES.md` — updated with phase 9 additions | ✅ |
+| `models.toml` — both models pinned by revision | ✅ |
+
+### What's missing ❌
+
+**1. Corpus count shortfalls (plan says explicit counts)**
+
+| Directory | Required | Actual | Gap |
+|---|---|---|---|
+| `image-scan/` | ≥ 3 | 1 | **−2** |
+| `mixed/` | ≥ 1 | 0 | **−1** |
+| `edge/` | empty, password-protected, truncated, A2-poster, bidi | 0 | **−5** |
+
+Plan says: *"Corpus populated under `tests/fixtures/pdfs/` per spec"* and spec lists explicit minimums. `mixed/` and `edge/` directories don't even exist. `LICENSES.md` acknowledges "real-corpus expansion is post-v1 follow-up" — but `edge/` fixtures (empty PDF, password-protected, truncated) are trivially synthetic and were planned as phase 9 deliverables, not post-v1.
+
+**2. E2E test coverage gaps**
+
+Plan says test_e2e.py covers four categories. Two are missing entirely:
+
+- **ML-path CER tests** — file header says they "live behind `@pytest.mark.slow`" but no such tests exist in the file. Zero `@pytest.mark.slow` decorated tests.
+- **Mixed PDF per-page outcome assertions** — no mixed fixtures, no tests.
+- **Edge exit-code assertions** — only corrupted (scenario 13) and format-mismatch (scenario 18) present. Missing: empty PDF (scenario 11), password-protected (scenario 12), `--strict` abort (scenario 15).
+
+**3. `tests/test_perf_smoke.py` missing**
+
+Plan explicitly says: *"Performance smoke (not a hard CI gate): `tests/test_perf_smoke.py` runs the native-only path on the digital-clean corpus and asserts wall-clock under the 5-second floor with a generous slack."* File doesn't exist.
+
+### Minor observations (COMMENT, not blocking)
+
+- `models.toml` shows OCR footprint as 1100 MB; `docs/model-card.md` and `README.md` say ~580 MB. Inconsistency — verify which is correct and align.
+- CI matrix is 3.11/3.12 but plan says 3.10/3.11. Not a phase 9 issue (phase 1 decision), just noting the discrepancy.
+- No `--help` output verification test (plan acceptance criterion: *"`arabic-pdf-transcribe --help` matches the documented surface"*).
+
+---
+
+```
+VERDICT: REQUEST_CHANGES
+SUMMARY: Core docs and native-path e2e tests are solid, but the benchmark corpus is substantially incomplete (missing mixed/, edge/, 2 more image-scan/) and several plan-explicit deliverables are absent (perf smoke test, ML-path CER e2e tests, edge-case exit-code tests).
+CONFIDENCE: HIGH
+```
+
+---
+KEY_ISSUES:
+- `tests/fixtures/pdfs/edge/` directory and all 5 edge fixtures (empty, password-protected, truncated, A2-poster, bidi) missing — plan deliverable, trivially synthetic
+- `tests/fixtures/pdfs/mixed/` directory and ≥1 fixture missing — plan deliverable
+- `tests/fixtures/pdfs/image-scan/` needs 2 more fixtures to meet ≥3 minimum
+- `tests/test_e2e.py` claims ML-path CER tests exist behind `@pytest.mark.slow` but none do — either add them or remove the false claim
+- `tests/test_perf_smoke.py` missing entirely — explicit plan deliverable
+- `tests/test_e2e.py` missing exit-code tests for empty PDF (scenario 11), password-protected PDF (scenario 12), and `--strict` abort (scenario 15)
+- `models.toml` says OCR footprint 1100 MB vs docs saying ~580 MB — reconcile

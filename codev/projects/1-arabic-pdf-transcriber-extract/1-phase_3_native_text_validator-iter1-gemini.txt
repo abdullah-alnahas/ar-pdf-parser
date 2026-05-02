@@ -1,0 +1,36 @@
+CONSULTATION UNAVAILABLE
+
+Model: gemini-cli (Gemini Pro)
+Date: 2026-05-02
+Status: SKIPPED — upstream quota exhausted (sixth occurrence in this project)
+
+Phase 3 implement consultation attempt returned:
+  HTTP 429 — "You have exhausted your capacity on this model."
+
+Per architect instructions [2026-05-01T18:32:24.195Z] and [2026-05-01T18:40:20.304Z]:
+  "If still quota-blocked, skip — 2/3 acceptable when 3rd is infra-blocked."
+
+Codex and Claude consultations recorded in:
+  - 1-phase_3_native_text_validator-iter1-codex.txt (REQUEST_CHANGES — addressed)
+  - 1-phase_3_native_text_validator-iter1-claude.txt (APPROVE w/ comments — addressed)
+
+Iteration 2 fixes applied (see 1-phase_3_native_text_validator-iter1-rebuttals.md):
+  - validate_page() rejects empty / whitespace-only text layers via the
+    new `empty_text_layer` reason, ordered after the replacement-glyph
+    signal so all-replacement-glyph pages still get the more specific
+    reason.
+  - LICENSES.md grew rows for digital-broken/mojibake.pdf and
+    digital-broken/replacement-glyphs.pdf (MIT, project-owned).
+  - page parameter typed via `TYPE_CHECKING` import of NativePage, no
+    `Any` (matches plan signature, satisfies CLAUDE.md type-safety rule).
+  - Added empty-text-layer + punctuation-only regression tests.
+  - Switched two threshold-bite tests from fixture-based to
+    synthetic-page so the empty-text-layer guard does not short-circuit
+    them.
+
+---
+VERDICT: SKIPPED
+SUMMARY: Gemini Pro quota exhausted; architect-approved 2/3 consultation.
+CONFIDENCE: N/A
+---
+KEY_ISSUES: none (consultation not performed)

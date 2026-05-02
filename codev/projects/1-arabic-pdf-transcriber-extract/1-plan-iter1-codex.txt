@@ -1,0 +1,11 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Strong overall structure, but the plan under-specifies the unified document model needed for heading levels, tables, and failure placeholders, which makes key spec requirements hard to implement consistently.
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- The `Region` schema is too thin for later phases. It has `role` but no explicit heading level, list subtype/ordinal, table cell/grid structure, grouped caption/figure linkage, or failure-placeholder representation. Yet phases 6–8 and the spec require H1/H2/H3 output, list styling, basic table round-trip, caption awareness, and per-page failure placeholders.
+- Table support is not actually planned end-to-end. Phase 7 promises Markdown/Word tables, but no earlier phase defines how native extraction, layout detection, OCR, or the unified model will detect cells / rows / columns and carry that structure forward. A flat `Region.text` stream is not enough to emit “actual Word table” reliably.
+- Phase 8’s dependency/ownership is inconsistent with the stated goal of wiring the full pipeline. It lists dependencies only on phases 2, 3, 6, 7 “and stubs for phases 4–5,” but the deliverables also say production wiring uses the HF adapters from phases 4 and 5. That should be made explicit in dependencies or split into “stubbed orchestration” vs “production ML wiring.”
+- The plan only makes the validator configurable via `ValidatorConfig`; it does not clearly cover the spec’s requirement for programmatic hooks to swap the validator and emitter, not just the layout detector and OCR adapter.
+- There is a mismatch around heading fallback behavior in phase 6: implementation text says “collapsed to H3 if the page has only unknown font-size data,” while acceptance criteria says “all headings at H2,” and the spec says absence of font-size info downgrades headings to a single H2 level. This needs one consistent rule.

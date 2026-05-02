@@ -1,0 +1,27 @@
+CONSULTATION UNAVAILABLE
+
+Model: gemini-cli (Gemini Pro)
+Date: 2026-05-02
+Status: SKIPPED — upstream unavailable (ninth occurrence in this project)
+
+Phase 6 implement consultation skipped per architect rule
+[2026-05-01T18:32:24.195Z] given pattern of prior eight gemini
+failures (HTTP 429 quota or JSON parse / timeout errors).
+
+Codex and Claude consultations recorded in:
+  - 1-phase_6_reading_order_and_roles-iter1-codex.txt (REQUEST_CHANGES — addressed)
+  - 1-phase_6_reading_order_and_roles-iter1-claude.txt (APPROVE — minor nits noted)
+
+Iteration-2 fixes applied (see rebuttals doc):
+  - Native-path heading-level inference is source-sensitive: native
+    headings without font_size meta now fall back to H2 (matches
+    spec). Height-based inference reserved for ML / OCR path.
+  - StatisticsError import moved to module top.
+  - Test split: native-no-meta -> H2 vs ML -> height-based binning.
+
+---
+VERDICT: SKIPPED
+SUMMARY: Gemini Pro consult unavailable; architect-approved 2/3.
+CONFIDENCE: N/A
+---
+KEY_ISSUES: none (consultation not performed)

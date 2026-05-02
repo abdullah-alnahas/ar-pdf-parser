@@ -1,0 +1,9 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Phase 3 is close, but the validator still accepts empty/whitespace-only native output and the new broken fixtures are not license-documented as required.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- `validate_page()` accepts pages whose native extraction is effectively empty as long as `has_text_layer=True` (`src/arabic_pdf_transcribe/validate/native_validator.py:217-259`). For example, whitespace-only text yields `accept=True`. That violates the phase objective of rejecting native output that is “missing or insufficient” and should be covered by a test.
+- The phase plan explicitly requires the two new `digital-broken/` fixtures to have documented licenses, but `tests/fixtures/pdfs/LICENSES.md:8-23` only lists `digital-clean/*` fixtures and omits `digital-broken/mojibake.pdf` and `digital-broken/replacement-glyphs.pdf`.

@@ -1,0 +1,53 @@
+Reading phase 6 source files and tests.Now reading tests and verifying Region helpers needed by phase 6.Need to verify Region helpers used by phase 6, and check if `group_id` plan spec format matches implementation.
+
+Now let me run tests to verify phase 6 passes.43 passed, 93% coverage. Now let me verify spec compliance on specific acceptance criteria.Now check `group_id` format. Plan says `f"p{page_index}-g{counter}"`, but implementation uses `uuid5`.Now let me verify the `StatisticsError` import placement.Review complete. Here's my assessment.
+
+## Phase 6 Review: RTL-aware Reading-order Reconstruction and Role Classification
+
+### Deliverables Check
+
+| Plan Deliverable | Status |
+|---|---|
+| `order/reorder.py` — `reorder()` function | ✅ |
+| `order/_columns.py` — column detector (1/2/3-col) | ✅ |
+| `order/_rows.py` — row band assignment within column | ✅ |
+| `roles/classify.py` — heading-level, list markers, header/footer prune, caption-figure linkage | ✅ |
+| Unit tests: 1/2/3-column RTL, mixed RTL/LTR, caption-figure, footnote-band pruning | ✅ (43 tests) |
+
+### Acceptance Criteria
+
+| Criterion | Status |
+|---|---|
+| Snapshot tests on 2-col and 3-col RTL pages match expected ordered ID list | ✅ `test_two_column_rtl_right_column_first`, `test_three_column_rtl_right_first` |
+| No-size-signal page → all headings `heading_level == 2` | ✅ `test_no_size_signal_at_all_emits_h2` |
+| Header/footer in top/bottom 5% band pruned; configurable | ✅ `test_top_band_paragraph_gets_pruned`, `test_prune_disabled_via_config` |
+| Figure+caption pair gets same `group_id`; ungrouped caption keeps `None` | ✅ `test_caption_close_below_figure_groups_them`, `test_caption_far_below_figure_stays_ungrouped` |
+
+### Code Quality Notes
+
+**Good:**
+- All functions are pure and deterministic. Same input → same output. No global state, no I/O.
+- `uuid5` for `group_id` is better than the plan's suggested `f"p{page_index}-g{counter}"` — deterministic from bbox coordinates, no mutable counter threading needed. Spec only requires "stable identifier"; this satisfies it.
+- Column detection is conservative — falls back to single-column when unsure. Correct failure mode.
+- Header/footer pruning only demotes `PARAGRAPH`/`UNKNOWN`, never `HEADING`/`TABLE`/`FIGURE`/`CAPTION`. Matches plan exactly.
+- Row-band tolerance uses `0.5 × median_region_height` per spec.
+- Coverage: 93% across phase 6 modules. Exceeds plan's 80% floor.
+
+**Minor nit (non-blocking):**
+
+1. **`StatisticsError` import at line 159** — placed *after* the function that uses it, with `# noqa: E402`. Works fine (module-level import executes before any function call), but unconventional. Should be at the top with `from statistics import quantiles` (line 47). Not a bug, just style.
+
+2. **`page_height` unused in `reorder()`** — explicitly silenced with `_ = page_height`. Documented as reserved. Fine for API symmetry with `classify_page()`.
+
+### Potential Edge Cases (informational, not blocking)
+
+- Two figures with identical `page_index` + `bbox.x0` + `bbox.y0` would generate the same `group_id` via uuid5. Extremely unlikely in practice (would mean overlapping figures from the layout detector).
+- `assign_to_columns` iterates columns linearly — O(regions × columns). With max 3 columns, irrelevant.
+
+---
+VERDICT: APPROVE
+SUMMARY: Phase 6 delivers all plan deliverables with clean, pure, well-tested code. 43 tests pass at 93% coverage. All 4 acceptance criteria met.
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- None
