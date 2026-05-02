@@ -28,6 +28,9 @@ venv/
 .builder-role.md
 .builder-start.sh
 
+# Claude Code per-session state — never part of the repo.
+.claude/scheduled_tasks.lock
+
 # OS files
 .DS_Store
 *.swp

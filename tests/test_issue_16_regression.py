@@ -72,11 +72,41 @@ def test_pyproject_pins_transformers_supporting_got_ocr2() -> None:
     )
 
 
+def test_got_ocr2_class_is_registered_in_auto_image_text_to_text() -> None:
+    """``AutoModelForImageTextToText`` must know about ``got_ocr2``.
+
+    The original failure surface was ``AutoModelForImageTextToText
+    .from_pretrained`` raising on the unknown ``got_ocr2`` model type —
+    not just ``AutoConfig``. The auto-class mapping is populated at
+    import time from a name-only registry (``MODEL_FOR_*_MAPPING_NAMES``),
+    so this check exercises the exact failing API path with zero
+    network or weight I/O. Skipped when the ``[ml]`` extra is absent.
+    """
+    pytest.importorskip("transformers")
+    from transformers.models.auto.modeling_auto import (
+        MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES,
+    )
+
+    # Re-key into a plain ``dict[str, str]`` so the membership / lookup
+    # is not gated by transformers' ``Literal``-narrowed stubs (those
+    # lag the runtime registry by minor versions and would force a
+    # type-ignore here for a value that exists at runtime).
+    mapping: dict[str, str] = {str(k): str(v) for k, v in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES.items()}
+    assert "got_ocr2" in mapping, (
+        "AutoModelForImageTextToText has no entry for model_type "
+        "'got_ocr2'; transformers is too old (<4.49). This is the "
+        "exact API path that exploded on every ML-branch page in #16."
+    )
+    assert mapping["got_ocr2"] == "GotOcr2ForConditionalGeneration", (
+        f"unexpected got_ocr2 mapping target {mapping['got_ocr2']!r}; "
+        f"upstream may have renamed the class — check OCR adapter."
+    )
+
+
 def test_got_ocr2_config_instantiates_when_transformers_installed() -> None:
-    """If the ``[ml]`` extra is installed, ``AutoConfig`` must resolve
-    the GOT-OCR-2.0 model type. Reads the config from the local cache
-    (no network). Skipped when transformers is absent or the config
-    is not in the cache (CI without prefetched HF cache).
+    """If the GOT-OCR-2.0 config is in the local HF cache, ``AutoConfig``
+    must instantiate it. Network-free. Skipped when transformers is
+    absent or the config is not cached (CI without prefetched cache).
     """
     transformers = pytest.importorskip("transformers")
     AutoConfig = transformers.AutoConfig
