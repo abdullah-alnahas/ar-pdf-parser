@@ -1,7 +1,7 @@
 id: '1'
 title: arabic-pdf-transcriber-extract
 protocol: spir
-phase: review
+phase: verify
 plan_phases:
   - id: phase_1_skeleton_and_license_audit
     title: Project skeleton, tooling, and license-audit harness
@@ -47,7 +47,7 @@ gates:
   verify-approval:
     status: pending
 iteration: 1
-build_complete: true
+build_complete: false
 history:
   - iteration: 1
     plan_phase: phase_1_skeleton_and_license_audit
@@ -167,7 +167,7 @@ history:
         verdict: REQUEST_CHANGES
         file: codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-claude.txt
 started_at: '2026-05-01T18:20:53.792Z'
-updated_at: '2026-05-02T12:19:52.971Z'
+updated_at: '2026-05-02T12:20:26.838Z'
 pr_history:
   - phase: implement
     pr_number: 4
