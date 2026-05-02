@@ -19,10 +19,27 @@ pip install -e ".[dev]"          # native path only (deterministic, no ML)
 pip install -e ".[ml,dev]"       # full pipeline with HF layout + OCR
 ```
 
-The `ml` extra pulls in `transformers`, `torch`, `Pillow`, and `huggingface-hub`.
-None of these are required for the deterministic native-extraction path; the CLI
-falls back to "no ML" mode when the extra is not installed and surfaces a typed
-error if a page actually needs the ML branch.
+The `ml` extra pulls in `transformers`, `torch`, `torchvision`, `Pillow`, and
+`huggingface-hub`. None of these are required for the deterministic
+native-extraction path; the CLI falls back to "no ML" mode when the extra is
+not installed and surfaces a typed error if a page actually needs the ML branch.
+
+### CPU-only install (no NVIDIA / CUDA)
+
+The default PyPI wheels for `torch` / `torchvision` ship the NVIDIA CUDA
+runtime. If you do not have (or do not want) a GPU, install the CPU-only
+wheels first so pip pulls them from the PyTorch wheel index instead of the
+CUDA bundle:
+
+```bash
+pip install torch==2.5.1+cpu torchvision==0.20.1+cpu \
+    --index-url https://download.pytorch.org/whl/cpu
+pip install -e ".[ml,dev]"
+```
+
+`torchvision==0.20.1` is the release built against `torch==2.5.1`; mismatched
+versions surface as ``operator torchvision::nms does not exist`` when the
+layout model's image processor loads.
 
 ## CLI usage
 

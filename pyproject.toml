@@ -35,6 +35,13 @@ ml = [
     "huggingface-hub==0.26.2",
     "transformers==4.46.3",
     "torch==2.5.1",
+    # torchvision must match torch's C++ ABI: torchvision 0.20.1 is the
+    # release built against torch 2.5.1 (per the upstream compatibility
+    # matrix). Without an explicit pin, pip resolves a torchvision wheel
+    # built for a different torch ABI, which surfaces as
+    # ``operator torchvision::nms does not exist`` when ``transformers``
+    # imports torchvision via the layout model's image processor.
+    "torchvision==0.20.1",
     "Pillow==11.0.0",
 ]
 dev = [

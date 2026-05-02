@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-05-02
+
+### Fixed
+
+- **ML extra: pin `torchvision==0.20.1`** to match `torch==2.5.1`'s C++
+  ABI. Without the pin, `pip install -e '.[ml]'` resolved a torchvision
+  wheel built for a different torch ABI, and any page routed through the
+  ML branch crashed with
+  ``operator torchvision::nms does not exist`` /
+  ``partially initialized module 'torchvision'`` when `transformers`
+  loaded the DiT layout image processor (issue #12).
+- README install section documents the CPU-only install path for both
+  `torch` and `torchvision`.
+- CI / nightly workflows install `torchvision==0.20.1+cpu` from the
+  PyTorch CPU wheel index alongside `torch==2.5.1+cpu`, so the CI matrix
+  exercises the same wheels users install locally.
+- Regression test (`tests/test_torchvision_abi.py`): in a fresh
+  subprocess imports `torch` then `torchvision` and constructs the
+  layout adapter — fails on the bad pin, passes on the correct one.
+
+### Known limitations / deferred (carried over)
+
+- **Native-branch validator false-accept on real Arabic PDFs**: the
+  `min_arabic_ratio` / `max_replacement_ratio` / `max_word_boundary_kl`
+  thresholds are still tuned only against synthetic in-tree fixtures and
+  may accept broken text layers (mojibake / glyph-id-not-Unicode) on
+  real corpora. Issue #12 part B; corpus-driven retune is the v0.2.0
+  deliverable.
+
 ## [0.1.0] - 2026-05-02
 
 Initial release. Native-first Arabic PDF transcription pipeline with ML
