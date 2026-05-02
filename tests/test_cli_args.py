@@ -310,3 +310,76 @@ def test_config_missing_sections_yield_defaults(tmp_path: Path) -> None:
     assert doc == {}
     assert _validator_cfg_from_doc(doc) is None
     assert _resolve_dpi(None, doc) == 200
+
+
+# ---------------------------------------------------------------------------
+# --prefetch-models (issue #14)
+# ---------------------------------------------------------------------------
+
+
+def test_prefetch_models_argparse_accepts_no_input() -> None:
+    """``--prefetch-models`` may be passed without a positional INPUT."""
+    ns = _parse("--prefetch-models")
+    assert ns.prefetch_models is True
+    assert ns.input is None
+
+
+def test_prefetch_models_dispatches_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``main(--prefetch-models)`` calls ``_prefetch_models`` and returns its rc."""
+    import arabic_pdf_transcribe.cli as cli
+
+    calls: list[dict[str, object]] = []
+
+    def fake_prefetch(doc: dict[str, object]) -> int:
+        calls.append(doc)
+        return EXIT_OK
+
+    monkeypatch.setattr(cli, "_prefetch_models", fake_prefetch)
+    rc = cli.main(["--prefetch-models"])
+    assert rc == EXIT_OK
+    assert calls == [{}]
+
+
+def test_prefetch_models_with_config_loads_doc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import arabic_pdf_transcribe.cli as cli
+
+    cfg_path = tmp_path / "c.toml"
+    cfg_path.write_text("[ocr]\nmax_new_tokens = 1024\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_prefetch(doc: dict[str, object]) -> int:
+        captured.update(doc)
+        return EXIT_OK
+
+    monkeypatch.setattr(cli, "_prefetch_models", fake_prefetch)
+    rc = cli.main(["--prefetch-models", "--config", str(cfg_path)])
+    assert rc == EXIT_OK
+    assert captured.get("ocr") == {"max_new_tokens": 1024}
+
+
+def test_main_without_input_or_prefetch_errors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Omitting INPUT without ``--prefetch-models`` is a usage error."""
+    import arabic_pdf_transcribe.cli as cli
+
+    with pytest.raises(SystemExit):
+        cli.main([])
+    captured = capsys.readouterr()
+    assert "input" in captured.err.lower()
+
+
+def test_model_download_error_message_references_prefetch_flag() -> None:
+    """ModelDownloadError messages must point users at ``--prefetch-models``."""
+    from arabic_pdf_transcribe.errors import ModelDownloadError
+    from arabic_pdf_transcribe.layout.hf_detector import (
+        HFDiTLayoutDetector,
+        HFLayoutDetectorConfig,
+    )
+
+    detector = HFDiTLayoutDetector(HFLayoutDetectorConfig(model="does/not/exist", revision="x"))
+    with pytest.raises(ModelDownloadError) as exc_info:
+        detector.warm_up()
+    assert "--prefetch-models" in str(exc_info.value)

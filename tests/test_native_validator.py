@@ -16,6 +16,7 @@ from arabic_pdf_transcribe.validate import (
     ValidationResult,
     ValidatorConfig,
     arabic_codepoint_ratio,
+    presentation_form_ratio,
     replacement_glyph_ratio,
     reset_reference_cache,
     validate_page,
@@ -65,6 +66,47 @@ def test_replacement_glyph_ratio_pua() -> None:
 def test_replacement_glyph_ratio_geometric_shapes_box() -> None:
     """U+25A0 (BLACK SQUARE) is a common ``.notdef`` fallback."""
     assert replacement_glyph_ratio("■■■■hello") == pytest.approx(4 / 9)
+
+
+def test_replacement_glyph_ratio_ascii_control_bytes() -> None:
+    """Foulabook-style broken layers serialize glyph IDs as raw control bytes.
+
+    ``\\x01..\\x1F`` codepoints (excluding the standard whitespace controls
+    \\t\\n\\v\\f\\r) must count as replacement glyphs so the signal flags
+    pages whose text layer is a font-id-leaking glyph stream.
+    """
+    text = "\x01\x02\x03\x04\x05\x06\x07\x08hello"
+    assert replacement_glyph_ratio(text) == pytest.approx(8 / 13)
+
+
+def test_replacement_glyph_ratio_ascii_whitespace_excluded() -> None:
+    """Tabs and newlines are not counted as replacement glyphs."""
+    assert replacement_glyph_ratio("\t\n\r\v\fhello") == 0.0
+
+
+def test_presentation_form_ratio_pure_base_arabic() -> None:
+    """Pure base-form Arabic returns zero presentation share."""
+    assert presentation_form_ratio("كتاب قلم") == 0.0
+
+
+def test_presentation_form_ratio_pure_presentation_arabic() -> None:
+    """All-presentation-form text scores 1.0 — broken visual-order layer."""
+    # FB50-FDFF + FE70-FEFF presentation-form letters.
+    text = "ﭖﭘﭚﺑﺓﺗ"
+    assert presentation_form_ratio(text) == 1.0
+
+
+def test_presentation_form_ratio_no_arabic_abstains() -> None:
+    """Pages with no Arabic letters return 0.0 (signal abstains)."""
+    assert presentation_form_ratio("hello world") == 0.0
+    assert presentation_form_ratio("") == 0.0
+
+
+def test_presentation_form_ratio_mixed() -> None:
+    """Mixed base + presentation forms produces the expected ratio."""
+    # 4 base-form + 4 presentation-form letters.
+    text = "كتابﭖﭘﭚﺑ"
+    assert presentation_form_ratio(text) == pytest.approx(0.5)
 
 
 def test_word_boundary_plausibility_short_input_returns_zero() -> None:
@@ -278,6 +320,49 @@ def test_validate_page_replacement_glyphs_fixture_rejected() -> None:
     rejected = [validate_page(pg) for pg in pages]
     assert all(not r.accept for r in rejected)
     assert all(any("replacement_glyph_ratio" in reason for reason in r.reasons) for r in rejected)
+
+
+def test_validate_page_broken_glyph_id_layer_fixture_rejected() -> None:
+    """Foulabook-style PDF whose text layer is raw glyph IDs (control bytes).
+
+    Regression for issue #14: the validator's three original signals all
+    abstained on this failure mode (no Arabic letters at all → arabic gate
+    skipped; control bytes ignored as ASCII punctuation → replacement gate
+    abstained; KL stayed under threshold). The replacement-glyph signal
+    must now flag the page so the orchestrator routes it to ML.
+    """
+    pages = list(extract_native(DIGITAL_BROKEN / "broken-glyph-id-layer.pdf"))
+    assert pages
+    results = [validate_page(pg) for pg in pages]
+    assert all(not r.accept for r in results), "every page in the fixture must be rejected"
+    assert all(any("replacement_glyph_ratio" in reason for reason in r.reasons) for r in results)
+
+
+def test_validate_page_presentation_form_storm_rejected() -> None:
+    """Page whose Arabic body is overwhelmingly presentation-form letters fails."""
+    # 60+ presentation-form letters (well above min_letter_count).
+    text = "ﭖﭘﭚﺑﺓﺗﺙﺞ " * 8 + "ﺠﺡﺢﺣﺤﺥﺦﺧ " * 8
+    page = _page_with_text(text)
+    result = validate_page(page)
+    assert not result.accept
+    assert any("presentation_form_ratio" in r for r in result.reasons)
+
+
+def test_validate_page_few_presentation_forms_accepted() -> None:
+    """Mostly base-form Arabic with a few ligatures stays accepted."""
+    # 6 base-form Arabic words (varied lengths) plus a single ligature.
+    arabic_tokens = (
+        ["لا"] * 4
+        + ["كتب"] * 6
+        + ["كتاب"] * 6
+        + ["مدرسة"] * 5
+        + ["المدارس"] * 4
+        + ["الأكاديمي"] * 3
+    )
+    text = " ".join([*arabic_tokens, "ﻟﺍ"])  # one presentation-form ligature
+    page = _page_with_text(text)
+    result = validate_page(page)
+    assert result.accept, f"unexpected rejection: {result.reasons}"
 
 
 # ---- Sanity: every threshold has bite -----------------------------------

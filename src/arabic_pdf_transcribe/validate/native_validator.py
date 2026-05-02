@@ -1,22 +1,29 @@
 """Multi-signal native-text quality validator.
 
 The validator decides per-page whether the native extraction's text is
-trustworthy. The decision is the conjunction of three independent signals
-(per the spec's "all three must agree" rule from Resolved Decisions):
+trustworthy. The decision is the conjunction of independent signals
+(any one signal may flag the page):
 
 1. **Arabic codepoint ratio** -- the share of letter-class codepoints that
    fall in the Arabic Unicode blocks. A page that *should* be Arabic but
    yields almost no Arabic codepoints (mojibake encoding swap) fails this
    signal.
 2. **Replacement-glyph ratio** -- the share of codepoints that are U+FFFD,
-   private-use, or known no-glyph placeholders. Healthy text has near-zero
-   here; broken text-layers (glyph-id-not-Unicode mappings) produce
-   significant amounts.
+   private-use, ASCII control characters, or known no-glyph placeholders.
+   Healthy text has near-zero here; broken text-layers (glyph-id-not-Unicode
+   mappings) produce significant amounts. Foulabook-style PDFs serialize
+   font-specific glyph IDs as ASCII control codepoints (\\x01..\\x1F); those
+   are counted here so the signal flags such pages.
 3. **Word-boundary plausibility** -- KL divergence between the page's
    token-length distribution and a small bundled Arabic reference
    distribution. Cleanly extracted Arabic produces a distribution close
    to the reference; missing-spaces or every-char-its-own-word patterns
    diverge sharply.
+4. **Presentation-form ratio** -- among Arabic letters, the share that fall
+   in the Arabic Presentation Forms blocks (FB50-FDFF, FE70-FEFF). A few
+   ligatures are normal; an overwhelming majority indicates a visual-order
+   text layer (broken, e.g. body text serialized as shaped glyphs rather
+   than logical-order base codepoints).
 
 A page with no text layer (``has_text_layer == False``) bypasses the
 signals and is rejected with a single deterministic reason.
@@ -55,6 +62,20 @@ _ARABIC_RANGES: tuple[tuple[int, int], ...] = (
     (0x0750, 0x077F),  # Arabic Supplement
     (0x08A0, 0x08FF),  # Arabic Extended-A
 )
+
+# Arabic Presentation Forms: legitimate ligatures + visual-order shaped
+# glyphs. A few of these in body text is normal; an overwhelming majority
+# indicates a broken (visual-order) text layer.
+_ARABIC_PRESENTATION_RANGES: tuple[tuple[int, int], ...] = (
+    (0xFB50, 0xFDFF),  # Arabic Presentation Forms-A
+    (0xFE70, 0xFEFF),  # Arabic Presentation Forms-B
+)
+
+# Whitespace control codepoints we always preserve (skip from
+# replacement-ratio counting). Other Cc codepoints (\\x01..\\x08, \\x0B,
+# \\x0C, \\x0E..\\x1F, \\x7F, \\x80..\\x9F) indicate a glyph-id-not-Unicode
+# encoding leak.
+_WHITESPACE_CONTROL = frozenset({"\t", "\n", "\v", "\f", "\r"})
 
 # Replacement-glyph code points: U+FFFD plus the Private Use Area. Some
 # broken text layers produce private-use codepoints when glyph ID is not
@@ -104,6 +125,14 @@ class ValidatorConfig:
     # Latin pages (lorem-ar-2col) sit around 0.74; the mojibake fixture
     # at 1.0+. Phase 9 will retune against the broader corpus.
     max_word_boundary_kl: float = 1.0
+
+    # Maximum acceptable share of Arabic letters that fall in the
+    # Presentation Forms blocks. A handful of ligatures is normal; pages
+    # whose body text is overwhelmingly shaped/visual-order glyphs
+    # (broken layers) trip this gate. Pages with no Arabic at all
+    # abstain. Tuned against the in-tree fixtures + the Foulabook-class
+    # broken-layer regression fixture.
+    max_presentation_form_ratio: float = 0.5
 
     # Minimum number of letter codepoints required before the Arabic-ratio
     # signal participates; below this the signal abstains (returns the
@@ -163,9 +192,14 @@ def arabic_codepoint_ratio(text: str) -> float:
 def replacement_glyph_ratio(text: str) -> float:
     """Return the share of codepoints that look like glyph-fallback artefacts.
 
-    Counts U+FFFD plus the Private Use Areas. Whitespace and ASCII
-    punctuation are excluded from the denominator so a sparse page with
-    one PUA glyph does not trigger purely because the page is short.
+    Counts U+FFFD, Private Use Areas, ASCII control codepoints (other
+    than tabs/newlines), and known no-glyph placeholders. Whitespace
+    and ASCII punctuation are excluded from the denominator so a sparse
+    page with one bad glyph does not trigger purely because the page is
+    short. ASCII control codepoints (e.g. ``\\x01``..``\\x1F`` excluding
+    common whitespace) are counted as replacement: legitimate text never
+    contains them, but Foulabook-style broken text layers serialize
+    font-specific glyph IDs as raw ASCII control bytes.
     """
     total = 0
     bad = 0
@@ -173,15 +207,45 @@ def replacement_glyph_ratio(text: str) -> float:
         if ch.isspace():
             continue
         cp = ord(ch)
-        if cp < 0x80 and not ch.isalnum():
-            # ASCII punctuation: ignore.
+        is_control = unicodedata.category(ch) == "Cc" and ch not in _WHITESPACE_CONTROL
+        if cp < 0x80 and not ch.isalnum() and not is_control:
+            # ASCII punctuation/symbols: ignore. Control chars below
+            # fall through to the replacement count.
             continue
         total += 1
-        if _in_ranges(cp, _REPLACEMENT_RANGES):
+        if is_control or _in_ranges(cp, _REPLACEMENT_RANGES):
             bad += 1
     if total == 0:
         return 0.0
     return bad / total
+
+
+def presentation_form_ratio(text: str) -> float:
+    """Return the share of Arabic letters that fall in the Presentation Forms blocks.
+
+    A page with no Arabic letters at all returns ``0.0`` and the
+    page-level validator abstains (the gate is gated on a minimum
+    Arabic-letter count). Body text >50% in presentation forms
+    indicates a visual-order text layer where shaped glyphs were
+    serialized as codepoints rather than logical-order base
+    characters -- the validator routes such pages to the ML branch.
+    """
+    arabic_total = 0
+    presentation = 0
+    for ch in text:
+        if not _is_letter(ch):
+            continue
+        cp = ord(ch)
+        in_base = _in_ranges(cp, _ARABIC_RANGES)
+        in_pres = _in_ranges(cp, _ARABIC_PRESENTATION_RANGES)
+        if not (in_base or in_pres):
+            continue
+        arabic_total += 1
+        if in_pres:
+            presentation += 1
+    if arabic_total == 0:
+        return 0.0
+    return presentation / arabic_total
 
 
 # ---- Signal 3: word-boundary plausibility --------------------------------
@@ -227,16 +291,30 @@ def validate_page(
     text = "\n".join(region.text for region in page.regions)
     text = unicodedata.normalize("NFC", text)
     letter_count = sum(1 for ch in text if _is_letter(ch))
-    has_arabic = any(_in_ranges(ord(ch), _ARABIC_RANGES) for ch in text if _is_letter(ch))
+    has_arabic = any(
+        _in_ranges(ord(ch), _ARABIC_RANGES) or _in_ranges(ord(ch), _ARABIC_PRESENTATION_RANGES)
+        for ch in text
+        if _is_letter(ch)
+    )
+    arabic_letter_count = sum(
+        1
+        for ch in text
+        if _is_letter(ch)
+        and (
+            _in_ranges(ord(ch), _ARABIC_RANGES) or _in_ranges(ord(ch), _ARABIC_PRESENTATION_RANGES)
+        )
+    )
 
     arabic_ratio = arabic_codepoint_ratio(text)
     replacement_ratio = replacement_glyph_ratio(text)
     boundary_kl = word_boundary_plausibility(text)
+    pres_ratio = presentation_form_ratio(text)
 
     signals: dict[str, float] = {
         "arabic_codepoint_ratio": arabic_ratio,
         "replacement_glyph_ratio": replacement_ratio,
         "word_boundary_kl": boundary_kl,
+        "presentation_form_ratio": pres_ratio,
     }
     reasons: list[str] = []
 
@@ -265,6 +343,13 @@ def validate_page(
 
     if boundary_kl > cfg.max_word_boundary_kl:
         reasons.append(f"word_boundary_kl {boundary_kl:.3f} > max {cfg.max_word_boundary_kl:.3f}")
+
+    # Presentation-form gate: only enforced when the page carries enough
+    # Arabic letters for the ratio to mean something.
+    if arabic_letter_count >= cfg.min_letter_count and pres_ratio > cfg.max_presentation_form_ratio:
+        reasons.append(
+            f"presentation_form_ratio {pres_ratio:.3f} > max {cfg.max_presentation_form_ratio:.3f}"
+        )
 
     return ValidationResult(
         accept=not reasons,
@@ -341,6 +426,7 @@ __all__ = [
     "ValidationResult",
     "ValidatorConfig",
     "arabic_codepoint_ratio",
+    "presentation_form_ratio",
     "replacement_glyph_ratio",
     "reset_reference_cache",
     "validate_page",

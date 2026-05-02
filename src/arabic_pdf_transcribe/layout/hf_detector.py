@@ -150,9 +150,9 @@ class HFDiTLayoutDetector:
         except Exception as exc:  # pragma: no cover — exercised in slow test
             raise ModelDownloadError(
                 f"failed to load layout model {self.config.model}@{self.config.revision[:12]}; "
-                f"if running offline, prefetch with: "
-                f"huggingface-cli download {self.config.model} --revision {self.config.revision}. "
-                f"({exc})"
+                f"prefetch the weights with: arabic-pdf-transcribe --prefetch-models "
+                f"(or, manually: huggingface-cli download {self.config.model} "
+                f"--revision {self.config.revision}). ({exc})"
             ) from exc
         # Cast id2label keys to int — HF stores them as strings in JSON.
         raw = getattr(self._model.config, "id2label", {}) or {}
