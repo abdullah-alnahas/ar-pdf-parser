@@ -1,0 +1,21 @@
+Overall, this is a strong spec: scope is mostly well bounded, the native-first contract is clear, and the major architectural direction is feasible.
+
+Main review points:
+
+- **Clarity/completeness:** Good problem statement, constraints, and non-goals. The biggest gap is that several items marked “Critical (Blocks Progress)” are still unresolved, so the spec is not actually approval-ready yet.
+- **Technical feasibility:** Feasible as a Python CLI/library, but the validator contract and reproducibility expectations need tightening to avoid implementation drift.
+- **Edge cases/error scenarios:** Good coverage of mixed PDFs, broken text layers, malformed PDFs. Missing explicit behavior for model download failure, OOM, unsupported/encrypted PDFs, per-page partial failures, and CLI exit codes.
+- **Security:** Good start on PDF/model supply-chain concerns. Output sanitization needs a bit more precision for Markdown/embedded links/images, and temp-file/model-cache handling could be called out.
+- **Testing:** Strong test outline. However, “byte-identical Markdown” for ML paths conflicts with the later note that ML tests should use looser thresholds.
+
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Strong and feasible spec, but it still has blocking ambiguities around validator behavior, reproducibility, packaging, and failure-mode requirements.
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- The spec still contains unresolved **Critical (Blocks Progress)** items: project license, validator decision rule, and model distribution/packaging. Those should be resolved or explicitly deferred with a default decision before approval.
+- **Reproducibility is internally inconsistent**: success criteria require byte-identical Markdown for fixed weights/seeds, while the risks/tests section says ML-path snapshots should use looser CER-style thresholds. Clarify whether byte-identical reproducibility applies only to the native path, CPU-only inference, or all paths.
+- **Semantic output requirements are underspecified** for headings/lists/tables on the native path. The spec should define the minimum v1 classification contract so builders know what must be inferred vs preserved vs left as plain paragraphs.
+- **Failure behavior is missing**: specify expected CLI/library behavior for encrypted/unsupported PDFs, corrupted pages, model download/cache miss in offline mode, OOM/inference failure, and whether processing is fail-fast or best-effort per page.
+- **Acceptance criteria need one more precision pass** on test fixtures/benchmarks: define the benchmark corpus ownership/shape and what “RTL-correct” and “non-empty” mean operationally enough to be testable.

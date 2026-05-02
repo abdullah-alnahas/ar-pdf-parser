@@ -1,0 +1,31 @@
+CONSULTATION UNAVAILABLE
+
+Model: gemini-cli (Gemini Pro)
+Date: 2026-05-02
+Status: SKIPPED — upstream failure (seventh occurrence in this project)
+
+Phase 4 implement consultation attempt: gemini exited 1 with
+``[warn] Failed to extract usage for gemini: Unexpected end of JSON input``
+(quota exhaustion presented as a JSON parse error this time).
+
+Per architect instructions [2026-05-01T18:32:24.195Z] and [2026-05-01T18:40:20.304Z]:
+  "If still quota-blocked, skip — 2/3 acceptable when 3rd is infra-blocked."
+
+Codex and Claude consultations recorded in:
+  - 1-phase_4_layout_detection_adapter-iter1-codex.txt (REQUEST_CHANGES — addressed)
+  - 1-phase_4_layout_detection_adapter-iter1-claude.txt (APPROVE — addressed)
+
+Iteration 2 fix applied (see rebuttals doc):
+  - HFDiTLayoutDetector now guarantees every TABLE Region has a
+    populated table_grid: when ruled-line morphology cannot recover a
+    grid, the adapter falls back to a one-cell-per-row coalescing
+    (one row, one cell, bbox = full table bbox). Phase 5 OCRs the
+    single cell as plain prose; the contract from
+    layout/__init__.py:36-38 is now load-bearing rather than aspirational.
+
+---
+VERDICT: SKIPPED
+SUMMARY: Gemini Pro consult failed; architect-approved 2/3 consultation.
+CONFIDENCE: N/A
+---
+KEY_ISSUES: none (consultation not performed)

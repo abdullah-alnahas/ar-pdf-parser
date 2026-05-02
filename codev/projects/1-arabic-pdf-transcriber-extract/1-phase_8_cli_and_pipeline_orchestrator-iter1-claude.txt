@@ -1,0 +1,84 @@
+Reading phase 8 core files first.Now checking tests and remaining phase 8 deliverables.Now checking `ValidatorConfig.from_toml`, the `__init__.py` public API, and the console-script entry.Comprehensive picture now. Let me compile findings.
+
+## Phase 8 Review: CLI and Pipeline Orchestrator
+
+### Deliverable Checklist vs Plan
+
+| Deliverable | Status |
+|---|---|
+| `pipeline.py` with `transcribe()` + pluggable hooks | ✅ |
+| `cli.py` with full argparse surface | ✅ |
+| `pyproject.toml` console-script entry | ✅ |
+| `errors.py` extended with remaining exceptions | ✅ |
+| `_logging.py` — stderr progress, quiet, JSON modes | ✅ |
+| Failure-region synthesis | ✅ |
+| Process-scoped `TemporaryDirectory` lifecycle | ✅ |
+| Tests: CLI args, integration, pipeline, logging | ✅ |
+
+Architecture is clean. `ValidatedArgs` separates parsing from validation. Pipeline is protocol-based with stub injection. Temp-dir tests verify cleanup on both success and strict-failure paths. Progress logger is byte-stable in JSON mode. Good work overall.
+
+### Issues
+
+**1. BUG: `--format docx` to stdout → uncaught traceback**
+
+`_write_output` (cli.py:382) raises `FormatExtensionMismatch("cannot write a Word file to stdout")`, but `main()` only catches that exception from `validate_args` (line 278). This path:
+
+```
+arabic-pdf-transcribe input.pdf --format docx
+```
+
+passes `validate_args` (format="docx", output=None is valid), runs full pipeline, then crashes with a Python traceback in `_write_output`. User sees raw exception instead of clean error + exit 4.
+
+**Fix**: Either catch `FormatExtensionMismatch` around the `_write_output` call, or move the check into `validate_args` (preferred — fail fast before any pipeline work).
+
+**2. `--max-workers` accepted but never used**
+
+CLI parses and validates `max_workers` into `ValidatedArgs.max_workers` (line 149), but `transcribe()` in `pipeline.py` has no `max_workers` parameter. The resolved value is silently discarded at the call site (cli.py:301-311). Users who pass `--max-workers 4` get sequential processing with no indication it was ignored.
+
+Plan explicitly says: *"per-page parallelism for the ML branch. Default 1 on CPU; --max-workers auto selects min(cpu_count, 4)"*.
+
+**Fix options**: (a) Add `max_workers` to `pipeline.transcribe()` and implement `concurrent.futures` per-page parallelism for ML pages, or (b) accept the parameter in `transcribe()` but log a "not yet implemented" warning and document the gap — but don't silently ignore.
+
+**3. Missing `torch.cuda.OutOfMemoryError` catch**
+
+Plan says: *"OOM handling: catch `MemoryError` and `torch.cuda.OutOfMemoryError`"*. Pipeline (line 301) only catches `MemoryError`. `torch.cuda.OutOfMemoryError` inherits from `RuntimeError`, not `MemoryError` — so GPU OOM falls through to the generic `except Exception` handler. Functionally works (maps to failure), but loses the specialized `OutOfMemoryDuringInference` wrapper with the helpful DPI-reduction hint, and in `--strict` mode raises a generic exception instead of the typed one.
+
+**Fix**: Add a guarded catch before the `Exception` handler:
+```python
+except Exception as exc:
+    if _is_cuda_oom(exc):
+        # same as MemoryError path
+    ...
+```
+Where `_is_cuda_oom` checks `type(exc).__name__` without importing torch.
+
+**4. `--config` only reads `[validator]` — other sections ignored**
+
+Plan specifies config schema with `[validator]`, `[layout]`, `[ocr]`, `[render]` sections. Only `[validator]` is wired (`_load_validator_config`). `_maybe_build_ml_adapters()` constructs adapters with no-arg defaults — no path to pass model overrides from config.
+
+This is a moderate gap. Since `--dpi` covers render partially, and model selection from config is more of a power-user feature, I'd accept a documented TODO here rather than blocking.
+
+**5. No CLI-level test for exit code 5 (model missing)**
+
+Adapter-level tests verify `ModelDownloadError` is raised. CLI integration tests cover exit codes 0, 2, 3, 4 — but not 5. Adding one test that patches `transcribe` to raise `ModelDownloadError` and asserts `EXIT_MODEL_MISSING` would close this.
+
+### Minor Observations (non-blocking)
+
+- `_logging.py` JSON schema omits `"ts": null` field documented in its own docstring (line 15 mentions `"ts": null`, but `_event_to_dict` doesn't include it). Cosmetic inconsistency.
+- `_maybe_build_ml_adapters` catches bare `Exception` on constructor failure (line 365) — fine as defensive code but a comment explaining when this could happen would help maintainers.
+
+---
+
+```
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Core orchestrator is solid; two bugs (docx-stdout crash, max_workers silently ignored) and one spec gap (CUDA OOM catch) need fixes before proceeding.
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- BUG: `--format docx` without `-o` passes validate_args but crashes with uncaught FormatExtensionMismatch in _write_output — user sees traceback, not clean error. Move check to validate_args.
+- `--max-workers` flag is parsed, validated, and silently discarded — pipeline.transcribe() has no max_workers parameter. Either implement or surface a warning; silent discard violates plan contract.
+- torch.cuda.OutOfMemoryError (RuntimeError subclass) not caught alongside MemoryError — GPU OOM loses typed error + helpful hint in strict mode.
+- No CLI test for exit code 5 (ModelDownloadError path).
+- --config only reads [validator]; [layout]/[ocr]/[render] sections documented in plan are not wired (acceptable as documented TODO).
+```

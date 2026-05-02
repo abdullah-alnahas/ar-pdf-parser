@@ -1,0 +1,9 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Phase 6 is close, but heading-level inference violates the native-path fallback rule and the tests currently lock in that wrong behavior.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- Native headings without `font_size` metadata are incorrectly classified from bbox height instead of falling back to H2. `src/arabic_pdf_transcribe/roles/classify.py:121-143,162-177` applies height-based inference to all headings, but the spec/plan require native-path headings with no font-size signal to default to H2. This will mis-style native documents.
+- The test suite reinforces the same spec violation: `tests/test_roles_classify.py:93-104` expects height-based heading levels on regions created as `RegionSource.NATIVE`. This phase needs a source-sensitive test split: native-without-font-size => all H2; OCR/ML headings may use height-based inference.

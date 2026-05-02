@@ -1,0 +1,10 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Phase 7 is mostly well-implemented, but both emitters can silently drop grouped captions when the matching figure is absent from the region stream.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- `src/arabic_pdf_transcribe/emit/markdown.py:103-129` suppresses any `CAPTION` with a non-`None` `group_id`, even if no `FIGURE` with that `group_id` exists. I verified this behavior directly: a lone grouped caption renders as `''`, which is data loss and contradicts the intended “caption suppressed because it was emitted with the figure” behavior.
+- `src/arabic_pdf_transcribe/emit/docx.py:67-78` has the same bug: any grouped caption is skipped unconditionally, so a caption can disappear entirely if the paired figure is missing upstream.
+- Tests miss this edge case. `tests/test_emit_markdown.py:236-249` and `tests/test_emit_docx.py:204-212` cover the happy path where figure+caption are both present, but there is no regression test asserting that an orphan grouped caption still emits as a caption.

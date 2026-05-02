@@ -1,0 +1,25 @@
+CONSULTATION UNAVAILABLE
+
+Model: gemini-cli (Gemini Pro)
+Date: 2026-05-01
+Status: SKIPPED — upstream quota exhausted
+
+Two attempts were made (~4 minutes each, 10 retries each). Both returned:
+  HTTP 429 — "You have exhausted your capacity on this model."
+
+Per architect instruction [ARCHITECT INSTRUCTION | 2026-05-01T18:32:24.195Z]:
+  "If still quota-blocked, skip — 2/3 acceptable when 3rd is infra-blocked.
+   Document in spec that gemini was unavailable."
+
+Codex and Claude consultations are recorded in:
+  - 1-specify-iter1-codex.txt
+  - 1-specify-iter1-claude.txt
+
+Spec section "Expert Consultation" documents the gemini unavailability.
+
+---
+VERDICT: SKIPPED
+SUMMARY: Gemini Pro quota exhausted; architect-approved 2/3 consultation.
+CONFIDENCE: N/A
+---
+KEY_ISSUES: none (consultation not performed)

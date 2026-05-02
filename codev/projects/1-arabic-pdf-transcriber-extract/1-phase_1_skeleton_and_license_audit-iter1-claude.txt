@@ -1,0 +1,92 @@
+Reading all phase 1 files now.Good. Read all 17 implementation files. Now verify build works.All green. 20 tests pass, 100% coverage on package modules, lint clean, audit clean.
+
+## Review: Phase 1 — Skeleton & License Audit
+
+### Spec Adherence ✓
+
+Checking plan deliverables:
+
+| Deliverable | Status |
+|---|---|
+| `pyproject.toml` with exact-pinned deps | ✅ Runtime: `pypdfium2==4.30.0`, `python-docx==1.1.2`. ML in `[ml]` extra. Dev pinned. |
+| Source tree (`__init__`, `regions`, `errors`, `_version`) | ✅ All present with correct content |
+| `LICENSE` (MIT) | ✅ |
+| `README.md` stub | ✅ |
+| Ruff + pytest + coverage config | ✅ In `pyproject.toml` |
+| `tools/license_audit.py` | ✅ Comprehensive — stdlib-only, reads distributions + `models.toml` |
+| `models.toml` (empty `[[models]]`) | ✅ |
+| `Makefile` with `lint`, `test`, `audit`, `all` | ✅ |
+| CI workflow | ✅ Matrix 3.10/3.11, lint + audit + test |
+| Smoke tests (`test_skeleton.py`) | ✅ Import + version + lazy-import guarantee |
+| `tests/fixtures/pdfs/.gitkeep` + `LICENSES.md` | ✅ |
+
+### Code Quality
+
+**License audit tool** (`tools/license_audit.py`, 419 lines) — well-structured. Key strengths:
+- Dependency closure walking (`_resolve_dep_closure`) scopes audit to runtime deps only, skipping extras. Smart.
+- Multi-source license extraction (PEP 639 expression, classifiers, free-form `License` field) with SPDX normalization.
+- Override mechanism via TOML for metadata inconsistencies.
+- Clear exit-code contract (0/1/2).
+
+**One real issue**: `_resolve_dep_closure` extra-marker filtering at line 238 uses string matching:
+```python
+if "extra ==" in raw or 'extra=="' in raw or "extra=='" in raw:
+    continue
+```
+This is fragile. `extra == "ml"` (with spaces around `==`) would pass, but `extra!="ml"` or negated markers wouldn't be caught — though that's not a concern for this project since no dep uses negated extra markers. Acceptable for v1, but worth noting.
+
+**`errors.py`** — clean hierarchy. Plan says phase 1 creates base + `ModelDownloadError` + `OCRTranscriptionError`; phase 8 extends. Matches.
+
+**`regions.py`** — placeholder with `REGION_SCHEMA_VERSION = "1"`. Plan says real schema in phase 2. Correct.
+
+### Test Coverage
+
+20 tests total. Good coverage:
+
+- **Skeleton**: import, version, lazy-import (subprocess isolation — thorough), reload safety, regions schema version, error hierarchy
+- **License audit**: normalization aliases, long-blob rejection, classifier extraction, model TOML (valid/forbidden/missing-keys/empty/bad-schema/missing-file), distribution audit (narrow allow-list fails / default passes), overrides loading, `main()` integration (rc=0 and rc=1 paths)
+
+**Missing**: no test for `_expression_license` multi-clause splitting specifically (e.g. `"MIT OR Apache-2.0"`). Covered implicitly through `_dist_licenses` but a direct unit test would strengthen. Minor.
+
+### Error Handling
+
+- Missing `models.toml` → schema violation, not crash ✅
+- Bad TOML schema → violation ✅
+- License metadata absent → violation with actionable message ✅
+- Fallback when project not installed → audit everything ✅
+
+### Plan Alignment
+
+Phase 1 deliverables fully covered. Nothing from later phases leaked in. Console-script entry `arabic-pdf-transcribe = arabic_pdf_transcribe.cli:main` registered in `pyproject.toml` — `cli.py` doesn't exist yet (phase 8), but registering the entry point now is fine; install won't break, only calling it would.
+
+### Minor Observations (non-blocking)
+
+1. **Python 3.12 in classifiers but not CI matrix** — `pyproject.toml` classifiers list 3.12, CI only runs 3.10/3.11. Tests actually ran on 3.12 in my check. Plan says "3.10 and 3.11 (Linux only in v1)". Classifier is aspirational, not a bug — just inconsistent.
+
+2. **`filterwarnings = ["error"]` in pytest config** — aggressive. The `pytest_asyncio` deprecation warning appeared but didn't fail because it fires before collection. Could bite later if upstream deps emit warnings during test. Workable.
+
+3. **`package.json` shim** — clever bridge for porch state machine. Not in plan deliverables but necessary infrastructure. No issue.
+
+4. **`tomllib`** — stdlib since 3.11. Python 3.10 has it too? Yes — `tomllib` was added in 3.11, but `tomli` (the backport) isn't listed as a dep. Let me verify.**Found a real issue.** `tomllib` is Python 3.11+. `tools/license_audit.py` imports it at line 35, but `pyproject.toml` declares `requires-python = ">=3.10"` and CI runs 3.10. CI will fail on the 3.10 matrix leg.
+
+Fix options:
+- Add `tomli>=2.0; python_version < "3.11"` to dev deps and do conditional import
+- Bump `requires-python` to `>=3.11` 
+- Use `try: import tomllib; except: import tomli as tomllib` pattern in audit tool
+
+Plan says "depends only on the standard library + `tomllib`" — but `tomllib` isn't stdlib on 3.10. This is a blocker for CI green on 3.10.Tests pass on 3.12 where `tomllib` exists. CI 3.10 leg will fail.
+
+---
+
+```
+VERDICT: REQUEST_CHANGES
+SUMMARY: Phase 1 nearly complete and well-built; one blocker — `tomllib` import breaks Python 3.10 support declared in pyproject.toml
+CONFIDENCE: HIGH
+```
+
+---
+
+KEY_ISSUES:
+- **[BLOCKER] `tomllib` not available on Python 3.10**: `tools/license_audit.py` uses `import tomllib` (stdlib 3.11+), but `requires-python = ">=3.10"` and CI matrix includes 3.10. Fix: either add `tomli` as dev dep with conditional import fallback, or bump minimum to `>=3.11`.
+- **[MINOR] Classifier/CI mismatch**: `pyproject.toml` classifiers include Python 3.12 but CI only runs 3.10/3.11. Cosmetic — add 3.12 to CI matrix or remove classifier.
+- **[MINOR] `_expression_license` lacks direct unit test**: multi-clause SPDX splitting (`"MIT OR Apache-2.0"`) only tested implicitly. A parametrized test would strengthen coverage.

@@ -1,0 +1,10 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Phase 2’s core schema/extractor is mostly present, but the implementation does not yet validate the Arabic-native path it is supposed to ship and has text-ordering logic that will corrupt real Arabic lines.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- The phase-2 fixtures/tests do not satisfy the Arabic scope they are meant to prove. `tools/generate_fixtures.py:10-22,37-45` explicitly downgrades the “Arabic” fixtures to ASCII-only content, and `tests/test_extract_native.py:44-50,86-92` only asserts English tokens. That leaves the phase without evidence that native extraction works for Arabic or mixed Arabic/Latin PDFs as required by the spec/plan.
+- Native text assembly is not safe for real Arabic PDFs. `_group_words()` only splits on whitespace in `src/arabic_pdf_transcribe/extract/native.py:208-223`, so separately positioned words on the same line can be concatenated. Then `_line_from_words()` forces left-to-right geometric ordering in `src/arabic_pdf_transcribe/extract/native.py:256-263`, which will reverse logical order for RTL Arabic lines. Phase 6 cannot fix this because the region text is already flattened incorrectly here.
+- Fixture provenance/licensing is incomplete for this phase. `tests/fixtures/pdfs/LICENSES.md:8-10` still says `_none yet_` even though three PDFs are checked in, but the phase deliverables require those fixture licenses to be recorded.

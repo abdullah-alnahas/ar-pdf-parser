@@ -1,0 +1,60 @@
+Reading phase 7 files now.Now reading test files:Now checking regions.py for type consistency and running tests:All 101 tests pass. Let me verify one more edge case — the `escape_paragraph` interaction with inline escape on `*` and `+` as leading bullets:All escaping correct. Coverage data trimmed but all tests pass. Let me verify coverage numbers directly:Tests pass. Thorough review complete. Here's my assessment:
+
+## Phase 7 Review: Markdown and Word (.docx) Emitters
+
+### Spec Adherence ✅
+
+All plan deliverables present:
+- `emit/markdown.py` — all 9 role mappings match plan exactly
+- `emit/docx.py` — all style mappings correct (Heading N, Normal, List Bullet/Number, Quote)
+- `emit/_md_escape.py` — handles heading, bullet, ordered, blockquote, inline syntax
+- `emit/_bidi.py` — RLM insertion for Arabic-dominant + LTR-mixed text
+- `emit/_normalise.py` — NFC default, NFKC opt-in (addresses architect carry-over from phase 3)
+- `emit/__init__.py` — lazy proxy for docx import
+
+### Code Quality ✅
+
+**Strengths:**
+- Escaping logic correct and non-trivial. Two-pass approach (inline first, then block-leading) handles every edge case I tested: `# text`, `- text`, `* text` (inline-escaped `*` blocks bullet regex), `> text` (inline-escaped), `+ text` (block regex), nested `\\#`, multi-line blocks.
+- Arabic presentation forms NFC/NFKC decision well-reasoned and documented in `_normalise.py` docstring. Preserves ﷲ ligature under NFC; only NFKC collapses it.
+- RLM insertion is idempotent, deterministic, conservative (only Arabic-dominant + contains-LTR).
+- `table_grid` rendering handles short rows (padding), empty grids, v1-simplification comment.
+- Figure-caption grouping via `group_id` pre-pass correctly suppresses grouped captions.
+- `python-docx` imported lazily — subprocess test verifies no `docx` in `sys.modules`.
+
+**Minor observations** (not blocking):
+- `_prepare_text`, `_collect_grouped_caption_ids`, marker-stripping logic duplicated between `markdown.py` and `docx.py`. ~8 lines each, follows bacteria rule. Could extract to shared `_common.py` later.
+- `_render_heading` on empty text produces `"## "` (trailing space). Valid GFM, harmless.
+
+### Test Coverage ✅
+
+101 tests across 6 test files:
+- **test_emit_markdown.py**: 29 tests — all roles, list block merging, tables (pipes, padding, empty grid, v1 comment), figures (grouping, bracket escape), adversarial text, bidi, normalisation, determinism snapshot
+- **test_emit_docx.py**: 16 tests — per-role style assertions, tables, figures, grouping, network I/O purity (socket mock), determinism (document.xml byte equality), string path, empty input
+- **test_emit_bidi.py**: 12 tests — dominance, LTR detection, RLM insertion, idempotency, edge cases
+- **test_emit_md_escape.py**: 11 tests — inline, paragraph, table cell, Arabic passthrough
+- **test_emit_normalise.py**: 12 tests — NFC/NFKC, presentation forms A/B, canonical recomposition
+- **test_emit_lazy_import.py**: 5 tests — subprocess-based lazy import verification
+
+All three acceptance criteria verified:
+1. Markdown snapshots byte-identical ✅
+2. .docx structural test ✅
+3. No network I/O ✅
+
+### Bugs Found
+
+None.
+
+### Security ✅
+
+- `python-docx` creates fresh `Document()` — no macros, no embedded code
+- Markdown escaping prevents injection of structural constructs
+- HTML comment in failure placeholders sanitises `--` sequences
+
+---
+VERDICT: APPROVE
+SUMMARY: Phase 7 emitters are complete, correct, well-tested (101 tests), and match all plan deliverables — no bugs found.
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- None

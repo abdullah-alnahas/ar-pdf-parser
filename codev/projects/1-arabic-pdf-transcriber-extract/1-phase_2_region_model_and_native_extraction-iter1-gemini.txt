@@ -1,0 +1,34 @@
+CONSULTATION UNAVAILABLE
+
+Model: gemini-cli (Gemini Pro)
+Date: 2026-05-01
+Status: SKIPPED — upstream quota exhausted (fifth occurrence in this project)
+
+Two attempts in phase 2 implement consultation. Both returned:
+  HTTP 429 — "You have exhausted your capacity on this model."
+
+Per architect instructions [2026-05-01T18:32:24.195Z] and [2026-05-01T18:40:20.304Z]:
+  "If still quota-blocked, skip — 2/3 acceptable when 3rd is infra-blocked."
+
+Codex and Claude consultations recorded in:
+  - 1-phase_2_region_model_and_native_extraction-iter1-codex.txt (REQUEST_CHANGES — addressed)
+  - 1-phase_2_region_model_and_native_extraction-iter1-claude.txt (COMMENT — addressed)
+
+Iteration 2 fixes applied:
+  - Stream-order preservation in _group_lines (no Y or X sorting, walk
+    words in input order and bin into bands) — addresses codex's RTL bug.
+  - _split_line_into_cells uses absolute horizontal distance so RTL
+    streams (next word at lower X) split into cells correctly.
+  - lorem-ar-real.pdf fixture: real Arabic codepoints in text layer via
+    NotoSansArabicUI. Generated only when an Arabic-capable TTF exists
+    locally; test gracefully skips when fixture absent.
+  - LICENSES.md populated with all four phase-2 fixtures.
+  - pyproject.toml documents py>=3.11 (tomllib stdlib boundary).
+  - test_line_grouping_preserves_pdf_stream_order asserts the RTL fix.
+
+---
+VERDICT: SKIPPED
+SUMMARY: Gemini Pro quota exhausted; architect-approved 2/3 consultation.
+CONFIDENCE: N/A
+---
+KEY_ISSUES: none (consultation not performed)

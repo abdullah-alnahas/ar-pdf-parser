@@ -1,0 +1,73 @@
+Reading phase 5 files now.Builder worktree at `.builders/spir-1/`. Reading phase 5 files now.Good. Now reading test files.Now checking Region schema for `with_confidence` and `with_table_grid` helpers, and errors module.Now let me verify tests pass.All 22 pass. Let me verify coverage on phase 5 modules.rtk filtering coverage output. Let me bypass it.93% coverage on OCR modules. Good. Uncovered lines are `pragma: no cover` paths (missing transformers, model loading failures). Let me check the full test suite still passes.157 tests pass, lint + audit green. Here's my review:
+
+---
+
+## Phase 5 Review: OCR Transcription Adapter
+
+### Deliverable Checklist
+
+| Plan Deliverable | Status |
+|---|---|
+| `ocr/__init__.py` — `OCRTranscriber` Protocol | ✅ `runtime_checkable`, correct signature |
+| `ocr/hf_ocr.py` — GOT-OCR-2.0 adapter | ✅ Model selection documented, revision pinned |
+| `ocr/_crop.py` — region cropping utility | ✅ Padding, bounds-clipping, RGB conversion |
+| `models.toml` updated with OCR entry | ✅ Apache-2.0, commit hash pinned |
+| Confidence reporting `[0,1]` | ✅ Geometric mean of softmax probs |
+| Stub unit tests + `@pytest.mark.slow` | ✅ 19 tests + 1 slow + 3 lazy-import |
+| Lazy-import assertion | ✅ Subprocess-based, covers all 3 modules |
+
+### Spec Adherence
+
+**Strong.** All phase 5 requirements met:
+
+- Protocol boundary clean — `LayoutDetector` → regions with empty text → `OCRTranscriber` → regions with text filled. Contract matches plan exactly.
+- FIGURE pass-through (returns unchanged) — spec's "figures not OCR'd" rule.
+- TABLE cell-walking — walks `table_grid.rows[i].cells[j]`, OCRs each cell, returns populated grid. Outer `text` stays empty. Matches plan.
+- CAPTION/PARAGRAPH/HEADING/LIST_ITEM — all go through `_transcribe_simple`. Correct.
+- `ModelDownloadError` raised on cache miss → CLI exit 5 path. `OCRTranscriptionError` on decoder failure. Both match spec.
+
+### Code Quality
+
+**Good.** Few observations:
+
+1. **Model selection rationale** — well-documented comparison table in docstring. GOT-OCR-2.0-hf chosen (Apache-2.0, ~1.1 GB) over AIN (too large), arabic-large-nougat (GPL), nougat-base (NC + Latin-only). Sound reasoning.
+
+2. **Confidence computation** (`_confidence_from_scores`) — geometric mean of per-token softmax probs is correct. Handles edge cases (no scores, empty scores, count=0). Returns `None` gracefully when model doesn't expose scores.
+
+3. **Degenerate cell crop** — silently returns `("", None)` for table cells vs raising `OCRTranscriptionError` for top-level regions. Right tradeoff — one bad cell shouldn't nuke whole table.
+
+4. **Minor concern**: `hf_ocr.py:224` — `processor(images=image, ...)`. Some HF processors expect `image` (singular) as first positional arg, not `images` keyword. GOT-OCR-2.0-hf's processor should handle this, but it's worth noting the slow test is the only thing catching API mismatches. Not blocking — this is inherent to stub-based testing.
+
+5. **`_ensure_loaded` broad except** (line 157) — catches all `Exception`. Pragmatic for model loading, where failure modes are diverse. Wraps into `ModelDownloadError` with actionable message including the `huggingface-cli download` command. Good.
+
+### Test Coverage
+
+**93% on OCR modules.** Excellent.
+
+- 19 fast tests, 1 slow (real model), 3 lazy-import (subprocess)
+- Coverage gaps are all `pragma: no cover` / slow-path code (real model loading, real transformers import failure) — acceptable
+- Tests cover: protocol conformance (pos + neg), paragraph OCR, figure pass-through, table cell walking, table without grid → error, degenerate bbox → error, generate failure → error, missing transformers → ModelDownloadError, degenerate table cell → silent empty
+- **Lazy-import tests** use subprocess isolation — correct approach; catches leaks that in-process tests would miss
+
+### Error Handling
+
+**Complete.** Every error path documented in plan is covered:
+
+- Missing `transformers` → `ModelDownloadError`
+- Model load failure → `ModelDownloadError` with prefetch hint
+- Degenerate region crop → `OCRTranscriptionError`
+- TABLE with `None` grid → `OCRTranscriptionError` (catches phase 4 contract violation)
+- `model.generate()` failure → `OCRTranscriptionError`
+- Degenerate table cell → silent empty (graceful degradation)
+
+### Plan Alignment
+
+Matches plan precisely. No skipped items, no scope creep into later phases.
+
+---
+VERDICT: APPROVE
+SUMMARY: Phase 5 OCR adapter is complete — Protocol, concrete adapter, crop utility, model selection, confidence, tests (93% coverage), lazy imports all solid.
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- None

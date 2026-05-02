@@ -1,0 +1,17 @@
+SKIP — gemini-2.5-pro quota exhausted (HTTP 429 "You have exhausted
+your capacity on this model.") on review-PR consult attempt at
+2026-05-02. 2/3 acceptance pattern applied per architect approval —
+codex + claude review-PR consults stand in lieu of gemini.
+
+See:
+- 1-review-iter1-codex.txt — REQUEST_CHANGES (actionable items
+  addressed: status.yaml absolute paths sanitised; per-phase consult
+  artifacts committed under codev/projects/1-arabic-pdf-transcriber-extract/).
+- 1-review-iter1-claude.txt — APPROVE.
+
+Architect carry-over: gemini quota exhaustion was a recurring
+blocker across all 9 phases of the SPIR-1 build; the 2/3 fallback
+kept the pipeline unblocked without compromising review breadth.
+See codev/resources/lessons-learned.md "Three-way consult parallel
+with `&`-subshell + `wait` is fragile" + "Per-phase PR + 3-way
+consult per phase".

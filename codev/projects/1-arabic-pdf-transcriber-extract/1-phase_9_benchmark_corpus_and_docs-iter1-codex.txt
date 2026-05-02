@@ -1,0 +1,12 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Phase 9 is not complete: the benchmark corpus and e2e coverage fall materially short of the phase plan/spec despite the docs claiming completion.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- Benchmark corpus is incomplete versus the phase-9 deliverable/spec. There is no `tests/fixtures/pdfs/mixed/` or `tests/fixtures/pdfs/edge/`, and only one `image-scan` PDF exists (`tests/fixtures/pdfs/LICENSES.md:5-6`, `tests/fixtures/pdfs/LICENSES.md:16`, filesystem check). The plan required `digital-clean >=3`, `digital-broken >=2`, `image-scan >=3`, `mixed >=1`, plus edge fixtures.
+- The current corpus is not an adequate “Arabic PDF” benchmark set. `tests/fixtures/pdfs/LICENSES.md:10-12` explicitly says several “digital-clean” fixtures are ASCII-only, and the extracted text confirms that `lorem-ar-2col.pdf`, `lorem-ar-en-mixed.pdf`, and `lorem-ar-table.pdf` are English/ASCII rather than Arabic. That does not satisfy the spec’s benchmark requirement for Arabic PDFs across flavors.
+- `tests/test_e2e.py` does not implement the planned ML-path CER acceptance tests, mixed-PDF assertions, or edge-fixture assertions. Despite the docstring claim at `tests/test_e2e.py:15-17`, there are no slow CER tests in the file at all; the file only covers native snapshots, a few exit-code cases, determinism, and a docx smoke check (`tests/test_e2e.py:41-133`).
+- The phase-9 performance smoke deliverable is missing entirely: there is no `tests/test_perf_smoke.py` in the repo.
+- Documentation overstates completion. `README.md:7` says “phase 9 of 9 complete”, but `tests/fixtures/pdfs/LICENSES.md:13` and `:16` still describe future phase-9 enrichment/replacement work, and the actual corpus/test gaps above confirm the deliverables are not yet fully landed.

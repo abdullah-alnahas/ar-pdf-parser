@@ -1,0 +1,9 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Phase 1 is close, but the license audit scope is narrower than the plan requires and the package currently declares a broken console script.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- `tools/license_audit.py:217-270` audits only the runtime dependency closure and explicitly skips extras/dev tools. The phase 1 plan says the harness should read the resolved environment and automatically vet dependencies added later; as implemented, `.[dev]` and future optional ML deps can be installed yet bypass audit entirely.
+- `pyproject.toml:44-45` publishes `arabic-pdf-transcribe = arabic_pdf_transcribe.cli:main`, but `src/arabic_pdf_transcribe/cli.py` does not exist in this phase. Since CLI work is scheduled for phase 8, this should either be removed for now or replaced with a stub module to avoid shipping broken package metadata.

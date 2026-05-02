@@ -54,15 +54,15 @@ history:
       - model: gemini
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_1_skeleton_and_license_audit-iter1-gemini.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_1_skeleton_and_license_audit-iter1-gemini.txt
       - model: codex
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_1_skeleton_and_license_audit-iter1-codex.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_1_skeleton_and_license_audit-iter1-codex.txt
       - model: claude
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_1_skeleton_and_license_audit-iter1-claude.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_1_skeleton_and_license_audit-iter1-claude.txt
   - iteration: 1
     plan_phase: phase_2_region_model_and_native_extraction
     build_output: ''
@@ -70,15 +70,15 @@ history:
       - model: gemini
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_2_region_model_and_native_extraction-iter1-gemini.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_2_region_model_and_native_extraction-iter1-gemini.txt
       - model: codex
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_2_region_model_and_native_extraction-iter1-codex.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_2_region_model_and_native_extraction-iter1-codex.txt
       - model: claude
         verdict: COMMENT
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_2_region_model_and_native_extraction-iter1-claude.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_2_region_model_and_native_extraction-iter1-claude.txt
   - iteration: 1
     plan_phase: phase_3_native_text_validator
     build_output: ''
@@ -86,15 +86,15 @@ history:
       - model: gemini
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_3_native_text_validator-iter1-gemini.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_3_native_text_validator-iter1-gemini.txt
       - model: codex
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_3_native_text_validator-iter1-codex.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_3_native_text_validator-iter1-codex.txt
       - model: claude
         verdict: APPROVE
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_3_native_text_validator-iter1-claude.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_3_native_text_validator-iter1-claude.txt
   - iteration: 1
     plan_phase: phase_4_layout_detection_adapter
     build_output: ''
@@ -102,15 +102,15 @@ history:
       - model: gemini
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_4_layout_detection_adapter-iter1-gemini.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_4_layout_detection_adapter-iter1-gemini.txt
       - model: codex
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_4_layout_detection_adapter-iter1-codex.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_4_layout_detection_adapter-iter1-codex.txt
       - model: claude
         verdict: APPROVE
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_4_layout_detection_adapter-iter1-claude.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_4_layout_detection_adapter-iter1-claude.txt
   - iteration: 1
     plan_phase: phase_5_ocr_transcription_adapter
     build_output: ''
@@ -118,15 +118,15 @@ history:
       - model: gemini
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_5_ocr_transcription_adapter-iter1-gemini.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_5_ocr_transcription_adapter-iter1-gemini.txt
       - model: codex
         verdict: APPROVE
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_5_ocr_transcription_adapter-iter1-codex.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_5_ocr_transcription_adapter-iter1-codex.txt
       - model: claude
         verdict: APPROVE
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_5_ocr_transcription_adapter-iter1-claude.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_5_ocr_transcription_adapter-iter1-claude.txt
   - iteration: 1
     plan_phase: phase_6_reading_order_and_roles
     build_output: ''
@@ -134,15 +134,15 @@ history:
       - model: gemini
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_6_reading_order_and_roles-iter1-gemini.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_6_reading_order_and_roles-iter1-gemini.txt
       - model: codex
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_6_reading_order_and_roles-iter1-codex.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_6_reading_order_and_roles-iter1-codex.txt
       - model: claude
         verdict: APPROVE
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_6_reading_order_and_roles-iter1-claude.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_6_reading_order_and_roles-iter1-claude.txt
   - iteration: 1
     plan_phase: phase_7_emitters_markdown_and_docx
     build_output: ''
@@ -150,15 +150,15 @@ history:
       - model: gemini
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_7_emitters_markdown_and_docx-iter1-gemini.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_7_emitters_markdown_and_docx-iter1-gemini.txt
       - model: codex
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_7_emitters_markdown_and_docx-iter1-codex.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_7_emitters_markdown_and_docx-iter1-codex.txt
       - model: claude
         verdict: APPROVE
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_7_emitters_markdown_and_docx-iter1-claude.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_7_emitters_markdown_and_docx-iter1-claude.txt
   - iteration: 1
     plan_phase: phase_8_cli_and_pipeline_orchestrator
     build_output: ''
@@ -166,15 +166,15 @@ history:
       - model: gemini
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_8_cli_and_pipeline_orchestrator-iter1-gemini.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_8_cli_and_pipeline_orchestrator-iter1-gemini.txt
       - model: codex
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_8_cli_and_pipeline_orchestrator-iter1-codex.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_8_cli_and_pipeline_orchestrator-iter1-codex.txt
       - model: claude
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_8_cli_and_pipeline_orchestrator-iter1-claude.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_8_cli_and_pipeline_orchestrator-iter1-claude.txt
   - iteration: 1
     plan_phase: phase_9_benchmark_corpus_and_docs
     build_output: ''
@@ -182,15 +182,15 @@ history:
       - model: gemini
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-gemini.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-gemini.txt
       - model: codex
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-codex.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-codex.txt
       - model: claude
         verdict: REQUEST_CHANGES
         file: >-
-          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-claude.txt
+          codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-claude.txt
 started_at: '2026-05-01T18:20:53.792Z'
 updated_at: '2026-05-02T09:50:55.746Z'
 pr_history:
