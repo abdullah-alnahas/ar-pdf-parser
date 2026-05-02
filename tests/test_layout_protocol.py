@@ -87,7 +87,10 @@ def test_background_is_dropped_not_mapped() -> None:
     [
         ("Caption", RegionRole.CAPTION),
         ("Footnote", RegionRole.HEADER_FOOTER),
-        ("Formula", RegionRole.UNKNOWN),
+        # Issue #16: ``Formula`` remapped from UNKNOWN to PARAGRAPH —
+        # English-trained DiT mislabels Arabic body text as Formula,
+        # and the previous mapping silently dropped that body text.
+        ("Formula", RegionRole.PARAGRAPH),
         ("List-item", RegionRole.LIST_ITEM),
         ("Page-footer", RegionRole.HEADER_FOOTER),
         ("Page-header", RegionRole.HEADER_FOOTER),

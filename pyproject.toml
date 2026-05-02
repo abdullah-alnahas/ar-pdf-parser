@@ -33,7 +33,15 @@ dependencies = [
 [project.optional-dependencies]
 ml = [
     "huggingface-hub==0.26.2",
-    "transformers==4.46.3",
+    # transformers must support GOT-OCR-2.0 (model_type ``got_ocr2``),
+    # which landed in 4.49.0. The previous pin (4.46.3) silently
+    # mis-loaded the OCR model: ``AutoProcessor`` returned only the
+    # tokenizer and ``AutoModelForImageTextToText`` raised
+    # "model type 'got_ocr2' not recognized". See issue #16.
+    # Pinned to the exact validated version to match the
+    # exact-pin convention used by every other entry in the
+    # ``[ml]`` extra (torch, torchvision, Pillow, huggingface-hub).
+    "transformers==4.49.0",
     "torch==2.5.1",
     # torchvision must match torch's C++ ABI: torchvision 0.20.1 is the
     # release built against torch 2.5.1 (per the upstream compatibility

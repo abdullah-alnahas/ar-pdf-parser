@@ -45,7 +45,20 @@ DIT_LAYOUT_LABELS: tuple[str, ...] = (
 LABEL_TO_ROLE: dict[str, RegionRole] = {
     "Caption": RegionRole.CAPTION,
     "Footnote": RegionRole.HEADER_FOOTER,
-    "Formula": RegionRole.UNKNOWN,
+    # ``Formula`` is mapped to PARAGRAPH for Arabic-first usage. The
+    # default DiT model (cmarkea/dit-base-layout-detection) was trained
+    # on English research papers and frequently mislabels justified
+    # Arabic body text as ``Formula`` (39 such regions on a single
+    # Foulabook page in issue #16). The previous mapping to UNKNOWN
+    # did not drop the text — both PARAGRAPH and UNKNOWN render via
+    # ``_render_paragraph`` in the markdown emitter — but it triggered
+    # the hf_detector's "label X mapped to UNKNOWN" warning on every
+    # mislabelled region, drowning the log in spurious noise and
+    # misleading users into thinking the text had been lost.
+    # Mathematical formulas are rare in general Arabic books, so the
+    # semantically-correct mapping (this is body text, not unknown
+    # content) is PARAGRAPH. See issue #16 root cause #2.
+    "Formula": RegionRole.PARAGRAPH,
     "List-item": RegionRole.LIST_ITEM,
     "Page-footer": RegionRole.HEADER_FOOTER,
     "Page-header": RegionRole.HEADER_FOOTER,

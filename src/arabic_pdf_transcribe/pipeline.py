@@ -327,7 +327,13 @@ def _process_page(
         _emit_progress(progress, page_index, total, f"failure:{reason}")
         return _failure_outcome(page_index, native_page, reason, branch_state["branch"])
     except ArabicPdfTranscribeError as exc:
-        reason = type(exc).__name__
+        # Include ``str(exc)`` in the reason so JSON-log consumers see
+        # the actionable hint baked into the exception (e.g. the
+        # "prefetch the weights with: arabic-pdf-transcribe
+        # --prefetch-models" message on ModelDownloadError). Previous
+        # behaviour reported only the class name, hiding the hint.
+        # Issue #16 root cause #3.
+        reason = f"{type(exc).__name__}:{exc}"
         if strict:
             raise
         _emit_progress(progress, page_index, total, f"failure:{reason}")

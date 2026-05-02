@@ -187,7 +187,15 @@ def test_best_effort_inserts_failure_placeholder() -> None:
     failed = [p for p in result.pages if p.branch == "failed"]
     assert len(failed) >= 1
     assert all(p.regions[0].role is RegionRole.FAILURE_PLACEHOLDER for p in failed)
-    assert all(p.regions[0].failure_reason == "OCRTranscriptionError" for p in failed)
+    # Issue #16: failure_reason now includes ``str(exc)`` so JSON-log
+    # consumers see the actionable message (the exception's hint),
+    # not just the exception class name.
+    assert all(
+        p.regions[0].failure_reason is not None
+        and p.regions[0].failure_reason.startswith("OCRTranscriptionError:")
+        and "stub failure on page 1" in p.regions[0].failure_reason
+        for p in failed
+    )
 
 
 def test_all_failed_property_set_when_every_page_fails() -> None:
