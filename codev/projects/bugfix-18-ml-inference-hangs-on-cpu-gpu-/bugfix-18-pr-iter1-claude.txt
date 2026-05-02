@@ -1,0 +1,102 @@
+Two things jumped out: duplicated helpers across files, and a divergent `_is_cuda_oom` implementation. Let me verify.
+
+Now let me run the full test suite quickly to confirm nothing's broken:452 passed, lint clean. Now here's the review.
+
+---
+
+## PR #19 Review — Fix #18: GPU device + per-region progress + bounded OCR decode
+
+### Overall Assessment
+
+Solid bugfix. Three root causes correctly identified, all addressed. Tests comprehensive (18 new, 452 total pass). Clean lint. PR description excellent.
+
+### Issues Found
+
+#### 🔴 Code Duplication — `_is_cuda_oom` × 3, `_move_inputs_to_device` × 2
+
+**Three** copies of `_is_cuda_oom` exist:
+- `pipeline.py:382` — strict version (class name + module check only)
+- `hf_detector.py:376` — lenient version (also checks message string)  
+- `hf_ocr.py:362` — lenient version (identical to hf_detector's)
+
+**Two** copies of `_move_inputs_to_device`:
+- `hf_detector.py:359`
+- `hf_ocr.py:340`
+
+Both `_move_inputs_to_device` are byte-identical. Both adapter `_is_cuda_oom` are identical. But `pipeline.py`'s `_is_cuda_oom` is **different** — it lacks the string-fallback heuristic. This means:
+
+> A CUDA OOM that isn't a proper `torch.OutOfMemoryError` (older PyTorch, or a wrapped error) will be caught in the adapters but **not** caught in the pipeline.
+
+This is a behavioral inconsistency. The shared `_device.py` module already exists — both helpers belong there.
+
+**Severity: MEDIUM.** Functional for current PyTorch versions, but the divergence is a maintenance trap.
+
+#### 🟡 `_run_generate` kwargs duplication
+
+`_run_generate` repeats the full `generate(**inputs, max_new_tokens=..., num_beams=..., ...)` block twice (lines 303-314 and 327-337). Extract the kwargs dict once, call `generate` with it. Reduces the "forgot to update both" risk when adding future decoding params.
+
+**Severity: LOW.** Cosmetic / DRY.
+
+#### 🟡 `contextlib.suppress` on `model.to()` hides real errors
+
+In both `_ensure_loaded` methods:
+```python
+with contextlib.suppress(RuntimeError, ValueError):  # pragma: no cover
+    move(self._device)
+```
+
+If `model.to("cuda")` fails for a non-OOM reason (e.g., dtype mismatch, corrupted state dict), this silently swallows it and the model stays on CPU with no log message. The CUDA OOM handler later in `detect`/`_run_generate` only fires during inference — so the user gets slow CPU inference with zero diagnostic output.
+
+Consider: log a warning when the suppress fires, or narrow to only `torch.cuda.OutOfMemoryError`.
+
+**Severity: LOW.** Edge case, but silent degradation is exactly what this bugfix was meant to eliminate.
+
+#### 🟢 Minor: `inputs["input_ids"]` after `_move_inputs_to_device`
+
+Line 288 in `hf_ocr.py`:
+```python
+prompt_len = int(inputs["input_ids"].shape[1]) if "input_ids" in inputs else 0
+```
+After `_move_inputs_to_device`, `inputs` could be a new dict (from the fallback path). This works because the dict still contains the key — but worth noting `inputs` type changed from `BatchEncoding` to plain `dict`. Currently safe.
+
+#### 🟢 No review document
+
+`codev/reviews/` has no `*18*` file. BUGFIX protocol typically expects one. Not blocking.
+
+### What's Good
+
+- `_device.py` as shared module — clean separation
+- CUDA OOM → CPU fallback mid-run is clever and user-friendly
+- Per-region progress via string-encoded events keeps `ProgressCallback` signature stable
+- Config defaults (1024 tokens, ngram=3, penalty=1.05) are well-reasoned
+- CLI `--device` with proper TOML precedence chain
+- Tests stub everything — no model downloads, no GPU needed
+- README documents the new behavior clearly
+
+---
+
+VERDICT: COMMENT
+SUMMARY: Good bugfix with three duplicated helpers that should live in `_device.py`; shippable as-is but dedup before merge is cheap
+CONFIDENCE: HIGH
+
+---
+
+KEY_ISSUES:
+- `_is_cuda_oom` exists 3× with divergent implementations (pipeline.py lacks string-fallback heuristic)
+- `_move_inputs_to_device` copy-pasted identically across hf_detector.py and hf_ocr.py
+- `contextlib.suppress` on `model.to()` silently swallows non-OOM failures with no logging
+
+PR_SUMMARY: |
+  ## Summary
+  Fixes #18: ML inference on CUDA-equipped hosts hung silently due to three root causes — models never moved to GPU, no per-region progress visibility, and unbounded OCR generation loops. This PR adds shared device resolution, CUDA OOM fallback, per-region progress events, and bounded decode defaults.
+
+  ## Key Changes
+  - New `_device.py` module resolving `auto`/`cuda`/`cpu` device hints against `torch.cuda.is_available()`
+  - Both HF adapters (OCR + layout) now call `model.to(device)` and move inputs to device; CUDA OOM mid-run auto-downgrades to CPU
+  - Pipeline emits `layout` and `region:{i}/{n}:{role}` progress events before each ML call
+  - `OCRConfig` defaults: `max_new_tokens=1024`, `no_repeat_ngram_size=3`, `repetition_penalty=1.05`
+  - New `--device` CLI flag and `[runtime].device` TOML section with proper precedence chain
+
+  ## Test Plan
+  - 18 new regression tests in `test_issue_18_regression.py` (device resolution, model.to, input.to, generate kwargs, progress events, CLI parsing, config precedence)
+  - Full suite: 452 passed, lint clean

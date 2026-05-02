@@ -44,6 +44,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from arabic_pdf_transcribe._device import (
+    is_cuda_oom,
+    move_inputs_to_device,
+    place_model,
+    resolve_device,
+)
 from arabic_pdf_transcribe.errors import ModelDownloadError
 from arabic_pdf_transcribe.layout._classes import (
     DROPPED_LABELS,
@@ -167,17 +173,8 @@ class HFDiTLayoutDetector:
         # Issue #18 RC#1: place model on the resolved device. Without
         # this, the segmentation forward pass ran on CPU even when
         # CUDA was available — the same root cause as the OCR hang.
-        from arabic_pdf_transcribe._device import resolve_device
-
         self._device = resolve_device(self.config.device)
-        move = getattr(self._model, "to", None)
-        if callable(move):
-            with contextlib.suppress(RuntimeError, ValueError):  # pragma: no cover
-                move(self._device)
-        switch = getattr(self._model, "eval", None)
-        if callable(switch):
-            with contextlib.suppress(Exception):  # pragma: no cover — stubs only
-                switch()
+        place_model(self._model, self._device)
 
     def detect(self, page_image: PILImage, page_index: int) -> Sequence[Region]:
         """Return regions detected on ``page_image``.
@@ -193,12 +190,12 @@ class HFDiTLayoutDetector:
         import torch
 
         inputs = self._processor(images=page_image, return_tensors="pt")
-        inputs = _move_inputs_to_device(inputs, self._device or "cpu")
+        inputs = move_inputs_to_device(inputs, self._device or "cpu")
         try:
             with torch.no_grad():
                 outputs = self._model(**inputs)
         except RuntimeError as exc:
-            if not _is_cuda_oom(exc) or self._device != "cuda":
+            if not is_cuda_oom(exc) or self._device != "cuda":
                 raise
             LOGGER.warning(
                 "layout: CUDA OOM during forward; falling back to CPU for the remainder of this run"
@@ -207,7 +204,7 @@ class HFDiTLayoutDetector:
                 torch.cuda.empty_cache()
             self._model.to("cpu")
             self._device = "cpu"
-            inputs = _move_inputs_to_device(inputs, "cpu")
+            inputs = move_inputs_to_device(inputs, "cpu")
             with torch.no_grad():
                 outputs = self._model(**inputs)
         logits = outputs.logits  # (1, num_labels, h, w)
@@ -354,32 +351,6 @@ def _connected_components(
             mean_conf = sum(confs) / len(confs) if confs else 0.0
             components.append(((min_x, min_y, max_x + 1, max_y + 1), mean_conf))
     return components
-
-
-def _move_inputs_to_device(inputs: Any, device: str) -> Any:
-    """Move processor outputs to ``device``; tolerate plain-dict stubs."""
-    move = getattr(inputs, "to", None)
-    if callable(move):
-        try:
-            return move(device)
-        except (TypeError, AttributeError, RuntimeError):
-            pass
-    try:
-        import torch
-    except ImportError:  # pragma: no cover
-        return inputs
-    if not isinstance(inputs, dict):
-        return inputs
-    return {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in inputs.items()}
-
-
-def _is_cuda_oom(exc: BaseException) -> bool:
-    """Detect a torch CUDA OOM without importing torch eagerly."""
-    cls = type(exc)
-    if cls.__name__ == "OutOfMemoryError" and (cls.__module__ or "").startswith("torch"):
-        return True
-    msg = str(exc).lower()
-    return "out of memory" in msg and "cuda" in msg
 
 
 def _fallback_single_cell_grid(bbox: BBox) -> TableGrid:

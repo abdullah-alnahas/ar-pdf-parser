@@ -125,8 +125,14 @@ The CLI's `--device {auto,cuda,cpu}` flag wins over `[runtime].device`.
 By default the ML adapters run on CUDA when `torch.cuda.is_available()`
 is true (50-100x faster than CPU on a typical Arabic page). Force a
 specific device with `--device cpu` (e.g. when CUDA OOM'd) or
-`--device cuda` (to fail loudly when CUDA is missing rather than
-silently falling through to a CPU run).
+`--device cuda` (when auto-detection misses, e.g. on ROCm builds).
+The CLI flag overrides every config layer including per-section
+`[layout].device` / `[ocr].device` — it is the documented escape hatch
+for "force CPU now" / "force CUDA now".
+
+If `--device cuda` is requested but `torch.cuda.is_available()` is
+false, the adapter logs a one-line warning and falls back to CPU
+rather than aborting the run.
 
 If a CUDA OOM fires mid-run, the adapter logs a one-line warning and
 downgrades itself to CPU for the remainder of the document — no

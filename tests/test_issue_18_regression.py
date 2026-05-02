@@ -391,11 +391,11 @@ def test_cli_parser_rejects_unknown_device() -> None:
 
 
 def test_cli_resolve_device_precedence() -> None:
-    """CLI flag > [runtime].device > "auto"."""
-    assert _resolve_device("cuda", {"runtime": {"device": "cpu"}}) == "cuda"
-    assert _resolve_device(None, {"runtime": {"device": "cpu"}}) == "cpu"
-    assert _resolve_device(None, {}) == "auto"
-    assert _resolve_device(None, {"runtime": {"device": ""}}) == "auto"
+    """CLI flag > [runtime].device > "auto"; second tuple element flags CLI override."""
+    assert _resolve_device("cuda", {"runtime": {"device": "cpu"}}) == ("cuda", True)
+    assert _resolve_device(None, {"runtime": {"device": "cpu"}}) == ("cpu", False)
+    assert _resolve_device(None, {}) == ("auto", False)
+    assert _resolve_device(None, {"runtime": {"device": ""}}) == ("auto", False)
 
 
 def test_runtime_device_propagates_to_adapter_configs() -> None:
@@ -409,13 +409,30 @@ def test_runtime_device_propagates_to_adapter_configs() -> None:
 
 
 def test_per_section_device_overrides_runtime_device() -> None:
+    """When ``[runtime].device`` provides the value (force_device=False),
+    per-section ``[layout].device`` / ``[ocr].device`` is more specific
+    and wins."""
     from arabic_pdf_transcribe.cli import _maybe_build_ml_adapters
 
-    doc = {"layout": {"device": "cuda"}, "ocr": {}}
-    layout, ocr = _maybe_build_ml_adapters(doc, device="cpu")
+    doc: dict[str, object] = {"layout": {"device": "cuda"}, "ocr": {}}
+    layout, ocr = _maybe_build_ml_adapters(doc, device="cpu", force_device=False)
     if layout is None or ocr is None:
         pytest.skip("[ml] extra unavailable")
     assert layout.config.device == "cuda"  # type: ignore[attr-defined]
+    assert ocr.config.device == "cpu"  # type: ignore[attr-defined]
+
+
+def test_cli_device_flag_overrides_per_section_device() -> None:
+    """``--device cpu`` MUST force CPU on every adapter, even when a
+    per-section ``[layout].device = "cuda"`` is set. This is the
+    documented escape hatch for the user (issue #18 review feedback)."""
+    from arabic_pdf_transcribe.cli import _maybe_build_ml_adapters
+
+    doc: dict[str, object] = {"layout": {"device": "cuda"}, "ocr": {"device": "cuda"}}
+    layout, ocr = _maybe_build_ml_adapters(doc, device="cpu", force_device=True)
+    if layout is None or ocr is None:
+        pytest.skip("[ml] extra unavailable")
+    assert layout.config.device == "cpu"  # type: ignore[attr-defined]
     assert ocr.config.device == "cpu"  # type: ignore[attr-defined]
 
 

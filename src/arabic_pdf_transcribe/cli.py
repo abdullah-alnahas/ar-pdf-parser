@@ -322,8 +322,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     config_doc = _load_config_doc(args.config)
     validator_cfg = _validator_cfg_from_doc(config_doc)
-    device = _resolve_device(args.device, config_doc)
-    layout_detector, ocr_transcriber = _maybe_build_ml_adapters(config_doc, device=device)
+    device, device_is_cli_override = _resolve_device(args.device, config_doc)
+    layout_detector, ocr_transcriber = _maybe_build_ml_adapters(
+        config_doc, device=device, force_device=device_is_cli_override
+    )
     dpi = _resolve_dpi(args.dpi, config_doc)
 
     def _progress(page_index: int, total: int, event: str) -> None:
@@ -440,22 +442,28 @@ def _resolve_dpi(cli_dpi: int | None, doc: dict[str, object]) -> int:
     return 200
 
 
-def _resolve_device(cli_device: str | None, doc: dict[str, object]) -> str:
-    """``--device`` CLI flag wins; otherwise read ``[runtime].device``; default ``"auto"``.
+def _resolve_device(cli_device: str | None, doc: dict[str, object]) -> tuple[str, bool]:
+    """Resolve the runtime device and whether the CLI explicitly set it.
+
+    Returns ``(device_string, cli_override)``. ``cli_override=True``
+    means the user passed ``--device`` and the choice MUST override
+    any per-section ``[layout].device`` / ``[ocr].device`` (this is
+    the user's escape hatch for "force CPU" or "force CUDA"). When
+    ``cli_override=False`` the value came from ``[runtime].device``
+    or the ``"auto"`` default and per-section overrides win.
 
     Issue #18 RC#1: gives the user a knob to force CPU when GPU OOMs
     early or to force CUDA when auto-detection misses (e.g. ROCm
-    builds). Adapter-level config still wins if the user sets it
-    directly via ``[ocr].device`` / ``[layout].device``.
+    builds).
     """
     if cli_device is not None:
-        return cli_device
+        return cli_device, True
     section = doc.get("runtime")
     if isinstance(section, dict):
         value = section.get("device")
         if isinstance(value, str) and value:
-            return value
-    return "auto"
+            return value, False
+    return "auto", False
 
 
 def _prefetch_models(config_doc: dict[str, object]) -> int:
@@ -520,6 +528,7 @@ def _maybe_build_ml_adapters(
     doc: dict[str, object] | None = None,
     *,
     device: str | None = None,
+    force_device: bool = False,
 ) -> tuple[object | None, object | None]:
     """Return ``(layout_detector, ocr_transcriber)`` or ``(None, None)``.
 
@@ -543,19 +552,21 @@ def _maybe_build_ml_adapters(
     layout_cfg = HFLayoutDetectorConfig.from_mapping((doc or {}).get("layout"))
     ocr_cfg = OCRConfig.from_mapping((doc or {}).get("ocr"))
     if device is not None:
-        # CLI ``--device`` / ``[runtime].device`` propagates into both
-        # adapter configs unless the user already set the per-section
-        # ``device`` field explicitly (in which case ``from_mapping``
-        # produced a non-default already and we leave it alone).
-        layout_section = (doc or {}).get("layout")
-        if not (isinstance(layout_section, dict) and "device" in layout_section):
-            from dataclasses import replace
+        from dataclasses import replace
 
+        # ``force_device=True`` means the user passed ``--device`` on
+        # the CLI; that's the documented escape hatch and MUST override
+        # per-section ``[layout].device`` / ``[ocr].device`` (otherwise
+        # ``--device cpu`` could not rescue a config that pinned CUDA).
+        # When the value came from ``[runtime].device`` instead, the
+        # per-section override is the more specific config and wins.
+        layout_section = (doc or {}).get("layout")
+        layout_has_device = isinstance(layout_section, dict) and "device" in layout_section
+        if force_device or not layout_has_device:
             layout_cfg = replace(layout_cfg, device=device)
         ocr_section = (doc or {}).get("ocr")
-        if not (isinstance(ocr_section, dict) and "device" in ocr_section):
-            from dataclasses import replace
-
+        ocr_has_device = isinstance(ocr_section, dict) and "device" in ocr_section
+        if force_device or not ocr_has_device:
             ocr_cfg = replace(ocr_cfg, device=device)
     try:
         return HFDiTLayoutDetector(layout_cfg), HFGotOCRTranscriber(ocr_cfg)

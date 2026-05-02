@@ -73,6 +73,12 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from arabic_pdf_transcribe._device import (
+    is_cuda_oom,
+    move_inputs_to_device,
+    place_model,
+    resolve_device,
+)
 from arabic_pdf_transcribe.errors import ModelDownloadError, OCRTranscriptionError
 from arabic_pdf_transcribe.ocr._crop import DEFAULT_PADDING_PX, crop_region
 from arabic_pdf_transcribe.regions import (
@@ -196,19 +202,8 @@ class HFGotOCRTranscriber:
         magnitude slower. ``self._device`` is sticky so a CUDA OOM
         mid-run can permanently downgrade us to CPU.
         """
-        from arabic_pdf_transcribe._device import resolve_device
-
         self._device = resolve_device(self.config.device)
-        move = getattr(self._model, "to", None)
-        if callable(move):
-            with contextlib.suppress(RuntimeError, ValueError):  # stub/oddball torch
-                move(self._device)
-        # ``.eval()`` (torch nn.Module mode switch — disables dropout,
-        # NOT Python's ``eval``) — guarded for stub models.
-        switch = getattr(self._model, "eval", None)
-        if callable(switch):
-            with contextlib.suppress(Exception):  # pragma: no cover — stubs only
-                switch()
+        place_model(self._model, self._device)
 
     def transcribe(self, region: Region, page_image: PILImage) -> Region:
         """Return ``region`` with text + confidence filled.
@@ -273,7 +268,7 @@ class HFGotOCRTranscriber:
                 images=image,
                 return_tensors="pt",
             )
-            inputs = _move_inputs_to_device(inputs, self._device or "cpu")
+            inputs = move_inputs_to_device(inputs, self._device or "cpu")
             outputs = self._run_generate(inputs, torch)
         except OCRTranscriptionError:
             raise
@@ -299,21 +294,12 @@ class HFGotOCRTranscriber:
         run, and retries. Subsequent regions stay on CPU rather than
         re-attempting CUDA per region.
         """
+        kwargs = self._generate_kwargs()
         try:
             with torch.no_grad():
-                return self._model.generate(
-                    **inputs,
-                    max_new_tokens=self.config.max_new_tokens,
-                    num_beams=self.config.num_beams,
-                    do_sample=self.config.do_sample,
-                    temperature=self.config.temperature,
-                    no_repeat_ngram_size=self.config.no_repeat_ngram_size,
-                    repetition_penalty=self.config.repetition_penalty,
-                    return_dict_in_generate=True,
-                    output_scores=True,
-                )
+                return self._model.generate(**inputs, **kwargs)
         except RuntimeError as exc:
-            if not _is_cuda_oom(exc) or self._device != "cuda":
+            if not is_cuda_oom(exc) or self._device != "cuda":
                 raise
             LOGGER.warning(
                 "OCR: CUDA OOM during generate; falling back to CPU for the remainder of this run"
@@ -322,49 +308,22 @@ class HFGotOCRTranscriber:
                 torch.cuda.empty_cache()
             self._model.to("cpu")
             self._device = "cpu"
-            cpu_inputs = _move_inputs_to_device(inputs, "cpu")
+            cpu_inputs = move_inputs_to_device(inputs, "cpu")
             with torch.no_grad():
-                return self._model.generate(
-                    **cpu_inputs,
-                    max_new_tokens=self.config.max_new_tokens,
-                    num_beams=self.config.num_beams,
-                    do_sample=self.config.do_sample,
-                    temperature=self.config.temperature,
-                    no_repeat_ngram_size=self.config.no_repeat_ngram_size,
-                    repetition_penalty=self.config.repetition_penalty,
-                    return_dict_in_generate=True,
-                    output_scores=True,
-                )
+                return self._model.generate(**cpu_inputs, **kwargs)
 
-
-def _move_inputs_to_device(inputs: Any, device: str) -> Any:
-    """Move processor outputs to ``device``.
-
-    Real ``BatchEncoding`` objects expose ``.to(device)`` directly;
-    test stubs return plain dicts (no ``.to``). Fall back to a
-    per-tensor move so stubs and real outputs both work.
-    """
-    move = getattr(inputs, "to", None)
-    if callable(move):
-        try:
-            return move(device)
-        except (TypeError, AttributeError, RuntimeError):
-            pass
-    try:
-        import torch
-    except ImportError:  # pragma: no cover
-        return inputs
-    if not isinstance(inputs, dict):
-        return inputs
-    return {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in inputs.items()}
-
-
-def _is_cuda_oom(exc: BaseException) -> bool:
-    """Detect a torch CUDA OOM without importing torch eagerly."""
-    cls = type(exc)
-    if cls.__name__ == "OutOfMemoryError" and (cls.__module__ or "").startswith("torch"):
-        return True
-    return "out of memory" in str(exc).lower() and "cuda" in str(exc).lower()
+    def _generate_kwargs(self) -> dict[str, Any]:
+        """Decoding kwargs forwarded to ``model.generate`` (DRY across retries)."""
+        return {
+            "max_new_tokens": self.config.max_new_tokens,
+            "num_beams": self.config.num_beams,
+            "do_sample": self.config.do_sample,
+            "temperature": self.config.temperature,
+            "no_repeat_ngram_size": self.config.no_repeat_ngram_size,
+            "repetition_penalty": self.config.repetition_penalty,
+            "return_dict_in_generate": True,
+            "output_scores": True,
+        }
 
 
 def _confidence_from_scores(outputs: Any, gen_tokens: Any) -> float | None:
