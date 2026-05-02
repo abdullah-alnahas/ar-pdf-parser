@@ -40,18 +40,17 @@ def test_errors_module_has_base_and_phase4_5_exceptions() -> None:
     assert issubclass(errors.OCRTranscriptionError, errors.ArabicPdfTranscribeError)
 
 
-def test_cli_stub_raises_not_implemented() -> None:
-    """The CLI entry point exists so ``pip install`` registers it cleanly.
-
-    Calling it before phase 8 must fail loudly rather than silently produce
-    empty or wrong output. Phase 8 will replace the body.
-    """
+def test_cli_main_is_callable() -> None:
+    """Phase 8 replaced the phase-1 placeholder. The entry point now
+    drives the full pipeline; ``--help`` short-circuits with exit 0
+    via argparse's ``SystemExit``."""
     import pytest
 
     from arabic_pdf_transcribe import cli
 
-    with pytest.raises(NotImplementedError, match="phase 8"):
-        cli.main([])
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["--help"])
+    assert exc_info.value.code == 0
 
 
 # ---------------------------------------------------------------------------
