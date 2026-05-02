@@ -58,10 +58,37 @@ class CorruptedPDFError(ArabicPdfTranscribeError):
     """
 
 
+class OutOfMemoryDuringInference(ArabicPdfTranscribeError):
+    """Raised when ML inference exhausts CPU or GPU memory.
+
+    The pipeline catches Python ``MemoryError`` and
+    ``torch.cuda.OutOfMemoryError`` at the per-page boundary and
+    re-raises this typed wrapper so callers can decide whether to
+    treat the failure as a per-page placeholder (default best-effort
+    mode) or to abort the run (``--strict``).
+
+    The message includes a hint pointing at the lowest-cost mitigation
+    (reduce ``--render.dpi`` or use the smaller fallback model) per
+    the spec's "OOM during ML inference" failure mode.
+    """
+
+
+class FormatExtensionMismatch(ArabicPdfTranscribeError):
+    """Raised when ``--format`` and the output extension disagree.
+
+    Mapped to CLI exit code 4 (per spec test scenario 18). Surfaced
+    by :func:`arabic_pdf_transcribe.cli.validate_args` before any
+    extraction or rasterisation work happens, so the user sees the
+    error immediately and no temp files are created.
+    """
+
+
 __all__ = [
     "ArabicPdfTranscribeError",
     "CorruptedPDFError",
     "EncryptedPDFError",
+    "FormatExtensionMismatch",
     "ModelDownloadError",
     "OCRTranscriptionError",
+    "OutOfMemoryDuringInference",
 ]

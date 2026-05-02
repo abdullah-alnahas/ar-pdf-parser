@@ -78,7 +78,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B011"]
+"tests/*" = ["B011", "B008", "RUF001", "RUF002", "RUF003"]
 # An Arabic-PDF transcriber legitimately contains Arabic glyphs in
 # source; the ambiguous-character lints (RUF001 / RUF002) treat
 # Arabic digits and dashes as suspicious because they resemble
@@ -86,6 +86,7 @@ ignore = [
 # point of this codebase. Suppress where the glyph is intended.
 "src/arabic_pdf_transcribe/roles/*" = ["RUF001", "RUF002"]
 "src/arabic_pdf_transcribe/validate/*" = ["RUF001", "RUF002"]
+"src/arabic_pdf_transcribe/emit/*" = ["RUF001", "RUF002", "RUF003"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
