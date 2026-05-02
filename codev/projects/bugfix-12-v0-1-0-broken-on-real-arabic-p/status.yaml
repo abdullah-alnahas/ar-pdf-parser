@@ -1,7 +1,7 @@
 id: bugfix-12
 title: v0-1-0-broken-on-real-arabic-p
 protocol: bugfix
-phase: pr
+phase: verified
 plan_phases: []
 current_plan_phase: null
 gates: {}
@@ -9,4 +9,4 @@ iteration: 1
 build_complete: false
 history: []
 started_at: '2026-05-02T12:39:01.485Z'
-updated_at: '2026-05-02T12:46:09.462Z'
+updated_at: '2026-05-02T12:57:58.658Z'
