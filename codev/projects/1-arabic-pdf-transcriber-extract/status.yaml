@@ -143,8 +143,24 @@ history:
         verdict: APPROVE
         file: >-
           /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_6_reading_order_and_roles-iter1-claude.txt
+  - iteration: 1
+    plan_phase: phase_7_emitters_markdown_and_docx
+    build_output: ''
+    reviews:
+      - model: gemini
+        verdict: REQUEST_CHANGES
+        file: >-
+          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_7_emitters_markdown_and_docx-iter1-gemini.txt
+      - model: codex
+        verdict: REQUEST_CHANGES
+        file: >-
+          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_7_emitters_markdown_and_docx-iter1-codex.txt
+      - model: claude
+        verdict: APPROVE
+        file: >-
+          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_7_emitters_markdown_and_docx-iter1-claude.txt
 started_at: '2026-05-01T18:20:53.792Z'
-updated_at: '2026-05-02T07:44:52.254Z'
+updated_at: '2026-05-02T07:44:57.850Z'
 pr_history:
   - phase: implement
     pr_number: 4
