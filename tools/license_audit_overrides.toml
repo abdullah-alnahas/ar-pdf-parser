@@ -13,4 +13,12 @@
 #   license = "MIT"                   # canonical SPDX-style identifier
 #   note    = "https://github.com/.../blob/main/LICENSE"  # justification
 
-overrides = []
+overrides = [
+    # torchvision declares its license as the bare string "BSD" with no
+    # classifier, so the alias map cannot disambiguate between
+    # BSD-2-Clause and BSD-3-Clause. The upstream LICENSE file is the
+    # 3-Clause BSD (per https://github.com/pytorch/vision/blob/v0.20.1/LICENSE).
+    # Pinned in the [ml] extra to match torch 2.5.1's C++ ABI (issue #12).
+    { dist = "torchvision==0.20.1+cpu", license = "BSD-3-Clause", note = "https://github.com/pytorch/vision/blob/v0.20.1/LICENSE" },
+    { dist = "torchvision==0.20.1", license = "BSD-3-Clause", note = "https://github.com/pytorch/vision/blob/v0.20.1/LICENSE" },
+]
