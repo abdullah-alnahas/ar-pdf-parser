@@ -182,6 +182,9 @@ class Region:
     def with_table_grid(self, grid: TableGrid | None) -> Region:
         return replace(self, table_grid=grid)
 
+    def with_confidence(self, confidence: float | None) -> Region:
+        return replace(self, confidence=confidence)
+
     def with_group_id(self, group_id: str | None) -> Region:
         return replace(self, group_id=group_id)
 

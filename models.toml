@@ -23,3 +23,11 @@ license = "Apache-2.0"
 stage = "layout"
 footprint_mb = 330
 source_url = "https://huggingface.co/cmarkea/dit-base-layout-detection"
+
+[[models]]
+name = "stepfun-ai/GOT-OCR-2.0-hf"
+revision = "d3017ef2c2c1395888c8d635c5e0508bcb0ac78d"
+license = "Apache-2.0"
+stage = "ocr"
+footprint_mb = 1100
+source_url = "https://huggingface.co/stepfun-ai/GOT-OCR-2.0-hf"
