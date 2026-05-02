@@ -175,8 +175,24 @@ history:
         verdict: REQUEST_CHANGES
         file: >-
           /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_8_cli_and_pipeline_orchestrator-iter1-claude.txt
+  - iteration: 1
+    plan_phase: phase_9_benchmark_corpus_and_docs
+    build_output: ''
+    reviews:
+      - model: gemini
+        verdict: REQUEST_CHANGES
+        file: >-
+          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-gemini.txt
+      - model: codex
+        verdict: REQUEST_CHANGES
+        file: >-
+          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-codex.txt
+      - model: claude
+        verdict: REQUEST_CHANGES
+        file: >-
+          /home/abdullah/Documents/hdd/arabic-pdf-trascriber/.builders/spir-1/codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-claude.txt
 started_at: '2026-05-01T18:20:53.792Z'
-updated_at: '2026-05-02T09:45:59.288Z'
+updated_at: '2026-05-02T09:46:08.963Z'
 pr_history:
   - phase: implement
     pr_number: 4
