@@ -41,6 +41,7 @@ from typing import Literal, TextIO
 
 from arabic_pdf_transcribe._logging import ProgressLogger, ProgressMode
 from arabic_pdf_transcribe.errors import (
+    ArabicPdfTranscribeError,
     CorruptedPDFError,
     EncryptedPDFError,
     FormatExtensionMismatch,
@@ -289,8 +290,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     logger = ProgressLogger(args.progress_mode, stream=sys.stderr)
 
-    validator_cfg = _load_validator_config(args.config)
-    layout_detector, ocr_transcriber = _maybe_build_ml_adapters()
+    config_doc = _load_config_doc(args.config)
+    validator_cfg = _validator_cfg_from_doc(config_doc)
+    layout_detector, ocr_transcriber = _maybe_build_ml_adapters(config_doc)
+    dpi = _resolve_dpi(args.dpi, config_doc)
 
     def _progress(page_index: int, total: int, event: str) -> None:
         page = page_index + 1
@@ -311,7 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             validator_config=validator_cfg,
             pages=args.pages,
             strict=args.strict,
-            dpi=args.dpi,
+            dpi=dpi,
             max_workers=args.max_workers,
             progress=_progress,
         )
@@ -330,6 +333,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OutOfMemoryDuringInference as exc:
         print(f"error: out-of-memory during inference: {exc}", file=sys.stderr)
         return EXIT_RUNTIME
+    except ArabicPdfTranscribeError as exc:
+        # Strict-mode abort surfaces a typed exception (e.g.
+        # OCRTranscriptionError) that none of the specific arms above
+        # match. Per spec scenario 15: clean exit 2 with a stderr
+        # message, not a Python traceback.
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_RUNTIME
 
     logger.summary(of=result.n_pages, ok_pages=result.ok_pages, failed_pages=result.failed_pages)
 
@@ -345,29 +355,67 @@ def main(argv: Sequence[str] | None = None) -> int:
     return EXIT_OK
 
 
-def _load_validator_config(config_path: Path | None) -> ValidatorConfig | None:
+def _load_config_doc(config_path: Path | None) -> dict[str, object]:
+    """Parse the TOML config file once into a section-keyed dict.
+
+    Returns an empty dict when no config is given. Each section
+    (``[validator]``, ``[layout]``, ``[ocr]``, ``[render]``) is
+    consumed by its respective adapter. Unknown sections are ignored
+    for forward compatibility.
+    """
     if config_path is None:
+        return {}
+    import tomllib
+
+    return tomllib.loads(config_path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+
+def _validator_cfg_from_doc(doc: dict[str, object]) -> ValidatorConfig | None:
+    section = doc.get("validator")
+    if not isinstance(section, dict):
         return None
-    return ValidatorConfig.from_toml(config_path)
+    kwargs = {k: v for k, v in section.items() if k in ValidatorConfig.__dataclass_fields__}
+    return ValidatorConfig(**kwargs)  # type: ignore[arg-type]
 
 
-def _maybe_build_ml_adapters() -> tuple[object | None, object | None]:
+def _resolve_dpi(cli_dpi: int | None, doc: dict[str, object]) -> int:
+    """``--dpi`` CLI flag wins; otherwise read ``[render].dpi``; default 200."""
+    if cli_dpi is not None:
+        return cli_dpi
+    section = doc.get("render")
+    if isinstance(section, dict):
+        value = section.get("dpi")
+        if isinstance(value, int) and value > 0:
+            return value
+    return 200
+
+
+def _maybe_build_ml_adapters(
+    doc: dict[str, object] | None = None,
+) -> tuple[object | None, object | None]:
     """Return ``(layout_detector, ocr_transcriber)`` or ``(None, None)``.
 
-    The CLI only attempts to wire the ML adapters when their imports
-    succeed; the adapters themselves load their model lazily on the
-    first call. When the optional ``[ml]`` extra is not installed,
-    the CLI proceeds without ML support — pages that need the ML
-    branch will surface :class:`RuntimeError` from the orchestrator,
-    which we map to a per-page failure (or strict abort).
+    The CLI wires the ML adapters when their imports succeed. The
+    optional TOML config doc supplies overrides via the ``[layout]``
+    and ``[ocr]`` sections (model id, revision, decoding params,
+    pixel-confidence threshold). The adapters load their model
+    lazily on the first call. When the optional ``[ml]`` extra is
+    not installed, the CLI proceeds without ML support — pages that
+    need the ML branch surface :class:`RuntimeError` from the
+    orchestrator, mapped to a per-page failure (or strict abort).
     """
     try:
-        from arabic_pdf_transcribe.layout.hf_detector import HFDiTLayoutDetector
-        from arabic_pdf_transcribe.ocr.hf_ocr import HFGotOCRTranscriber
+        from arabic_pdf_transcribe.layout.hf_detector import (
+            HFDiTLayoutDetector,
+            HFLayoutDetectorConfig,
+        )
+        from arabic_pdf_transcribe.ocr.hf_ocr import HFGotOCRTranscriber, OCRConfig
     except ImportError:
         return None, None
+    layout_cfg = HFLayoutDetectorConfig.from_mapping((doc or {}).get("layout"))
+    ocr_cfg = OCRConfig.from_mapping((doc or {}).get("ocr"))
     try:
-        return HFDiTLayoutDetector(), HFGotOCRTranscriber()
+        return HFDiTLayoutDetector(layout_cfg), HFGotOCRTranscriber(ocr_cfg)
     except Exception:  # pragma: no cover — defensive; constructors are cheap
         return None, None
 

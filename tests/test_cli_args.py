@@ -203,6 +203,30 @@ def test_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     assert "arabic-pdf-transcribe" in captured.out
 
 
+def test_help_surface_matches_documented_flags(capsys: pytest.CaptureFixture[str]) -> None:
+    """Phase-9 acceptance criterion: ``--help`` matches the documented
+    CLI surface (README + docs). All flags listed in the README's
+    "CLI usage" / "Exit codes" section must appear in --help output.
+    """
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    captured = capsys.readouterr()
+    out = captured.out
+    for flag in (
+        "--output",
+        "--format",
+        "--pages",
+        "--strict",
+        "--quiet",
+        "--json-logs",
+        "--config",
+        "--debug-json",
+        "--max-workers",
+        "--dpi",
+    ):
+        assert flag in out, f"--help missing documented flag {flag}"
+
+
 # ---------------------------------------------------------------------------
 # Missing input file → exit 4
 # ---------------------------------------------------------------------------
@@ -211,3 +235,78 @@ def test_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
 def test_missing_input_returns_exit_4(tmp_path: Path) -> None:
     rc = main([str(tmp_path / "does-not-exist.pdf")])
     assert rc == EXIT_CORRUPTED_OR_FORMAT
+
+
+# ---------------------------------------------------------------------------
+# TOML config sections (architect carry-over 3 from PR #9)
+# ---------------------------------------------------------------------------
+
+
+def test_config_validator_section_loaded(tmp_path: Path) -> None:
+    """``[validator]`` section overrides ValidatorConfig defaults."""
+    from arabic_pdf_transcribe.cli import _load_config_doc, _validator_cfg_from_doc
+
+    cfg_path = tmp_path / "c.toml"
+    cfg_path.write_text(
+        "[validator]\nmin_arabic_ratio = 0.7\nmax_replacement_ratio = 0.02\n",
+        encoding="utf-8",
+    )
+    doc = _load_config_doc(cfg_path)
+    cfg = _validator_cfg_from_doc(doc)
+    assert cfg is not None
+    assert cfg.min_arabic_ratio == 0.7
+    assert cfg.max_replacement_ratio == 0.02
+
+
+def test_config_render_section_overrides_dpi(tmp_path: Path) -> None:
+    """``[render].dpi`` is honoured when --dpi is not given."""
+    from arabic_pdf_transcribe.cli import _load_config_doc, _resolve_dpi
+
+    cfg_path = tmp_path / "c.toml"
+    cfg_path.write_text("[render]\ndpi = 300\n", encoding="utf-8")
+    doc = _load_config_doc(cfg_path)
+    assert _resolve_dpi(None, doc) == 300
+
+
+def test_cli_dpi_flag_wins_over_render_section(tmp_path: Path) -> None:
+    """Explicit --dpi beats config-file [render].dpi."""
+    from arabic_pdf_transcribe.cli import _load_config_doc, _resolve_dpi
+
+    cfg_path = tmp_path / "c.toml"
+    cfg_path.write_text("[render]\ndpi = 300\n", encoding="utf-8")
+    doc = _load_config_doc(cfg_path)
+    assert _resolve_dpi(150, doc) == 150
+
+
+def test_config_layout_section_parsed(tmp_path: Path) -> None:
+    """``[layout]`` section feeds HFLayoutDetectorConfig.from_mapping."""
+    from arabic_pdf_transcribe.layout.hf_detector import HFLayoutDetectorConfig
+
+    cfg = HFLayoutDetectorConfig.from_mapping(
+        {"pixel_confidence": 0.7, "min_region_area_px": 128, "unknown_key": "ignored"}
+    )
+    assert cfg.pixel_confidence == 0.7
+    assert cfg.min_region_area_px == 128
+
+
+def test_config_ocr_section_parsed() -> None:
+    """``[ocr]`` section feeds OCRConfig.from_mapping."""
+    from arabic_pdf_transcribe.ocr.hf_ocr import OCRConfig
+
+    cfg = OCRConfig.from_mapping({"max_new_tokens": 2048, "num_beams": 3, "junk_key": True})
+    assert cfg.max_new_tokens == 2048
+    assert cfg.num_beams == 3
+
+
+def test_config_missing_sections_yield_defaults(tmp_path: Path) -> None:
+    """Missing config file → empty doc → all defaults preserved."""
+    from arabic_pdf_transcribe.cli import (
+        _load_config_doc,
+        _resolve_dpi,
+        _validator_cfg_from_doc,
+    )
+
+    doc = _load_config_doc(None)
+    assert doc == {}
+    assert _validator_cfg_from_doc(doc) is None
+    assert _resolve_dpi(None, doc) == 200

@@ -292,6 +292,62 @@ def test_cuda_oom_best_effort_synthesises_failure() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Architect carry-overs (PR #9 review notes addressed in phase 9)
+# ---------------------------------------------------------------------------
+
+
+def test_failure_outcome_native_branch_marks_source_native() -> None:
+    """Architect note 4: failure-placeholder source must reflect the
+    branch where the exception happened. Validator failure → NATIVE."""
+
+    def _bad_validator(page: object, config: ValidatorConfig) -> ValidationResult:
+        raise OCRTranscriptionError("synthetic validator failure")
+
+    result = transcribe(CLEAN, validator=_bad_validator)
+    assert all(p.branch == "failed" for p in result.pages)
+    assert all(r.source is RegionSource.NATIVE for p in result.pages for r in p.regions)
+
+
+def test_failure_outcome_ml_branch_marks_source_ocr() -> None:
+    """Architect note 4: ML-branch failure → OCR source on placeholder."""
+    layout = _StubLayoutDetector()
+    ocr = _FailingOCR(fail_on_page=1)
+    result = transcribe(
+        CLEAN,
+        layout_detector=layout,
+        ocr_transcriber=ocr,
+        validator=_reject_validator,
+    )
+    failed = [p for p in result.pages if p.branch == "failed"]
+    assert failed
+    for p in failed:
+        for r in p.regions:
+            assert r.source is RegionSource.OCR
+
+
+def test_pages_filter_pushes_into_extract_native() -> None:
+    """Architect note 1: page-skip happens inside extract_native via the
+    ``pages`` kwarg; non-selected pages are not text-extracted at all.
+
+    Verified by spying on the per-page extract function.
+    """
+    import unittest.mock as mock
+
+    from arabic_pdf_transcribe.extract import native as native_module
+
+    seen: list[int] = []
+    real_extract = native_module._extract_page
+
+    def _spy(page: object, page_index: int) -> object:
+        seen.append(page_index)
+        return real_extract(page, page_index)
+
+    with mock.patch.object(native_module, "_extract_page", side_effect=_spy):
+        transcribe(CLEAN, validator=_accept_validator, pages=(0,))
+    assert seen == [0], f"_extract_page invoked for unselected pages: {seen}"
+
+
+# ---------------------------------------------------------------------------
 # Encrypted / corrupted PDFs surface from the loader
 # ---------------------------------------------------------------------------
 

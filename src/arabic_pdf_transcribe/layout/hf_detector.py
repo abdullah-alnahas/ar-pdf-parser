@@ -90,6 +90,19 @@ class HFLayoutDetectorConfig:
     min_region_area_px: int = DEFAULT_MIN_REGION_AREA_PX
     detect_table_cells: bool = True
 
+    @classmethod
+    def from_mapping(cls, mapping: object) -> HFLayoutDetectorConfig:
+        """Build a config from a TOML ``[layout]`` section dict.
+
+        Unknown keys are ignored (forward-compatibility); typed fields
+        come through Python's TOML loader as the right scalars
+        already.
+        """
+        if not isinstance(mapping, dict):
+            return cls()
+        kwargs = {k: v for k, v in mapping.items() if k in cls.__dataclass_fields__}
+        return cls(**kwargs)  # type: ignore[arg-type]
+
 
 class HFDiTLayoutDetector:
     """Concrete :class:`LayoutDetector` backed by the DiT-base model.

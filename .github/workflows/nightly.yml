@@ -1,0 +1,46 @@
+name: nightly
+
+# Slow tests + cached HF model warm-up. Runs once a day on main; the
+# Hugging Face cache survives across runs via actions/cache so the
+# real-model adapter tests don't re-download the 330 MB DiT layout
+# checkpoint on every invocation.
+
+on:
+  schedule:
+    # 04:00 UTC -- off-peak for Hugging Face Hub.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Cache Hugging Face Hub
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-cache-${{ runner.os }}-${{ hashFiles('models.toml') }}
+          restore-keys: |
+            hf-cache-${{ runner.os }}-
+
+      - name: Install CPU-only torch
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install package + ml + dev extras
+        run: pip install -e ".[ml,dev]"
+
+      - name: Run slow tests
+        run: pytest --run-slow
+
+      - name: License audit (full)
+        run: python tools/license_audit.py --include-extras=ml

@@ -56,19 +56,42 @@ class NativePage:
 # ---- Public API ---------------------------------------------------------
 
 
-def extract_native(pdf_path: Path) -> Iterator[NativePage]:
+def extract_native(
+    pdf_path: Path,
+    *,
+    pages: set[int] | None = None,
+) -> Iterator[NativePage]:
     """Yield one :class:`NativePage` per page in the input PDF.
 
     Iterator-shaped so a 500-page document can be processed without
-    holding every region in memory at once.
+    holding every region in memory at once. When ``pages`` is given,
+    only those *0-based* page indices are read; non-selected pages
+    skip text extraction entirely (no work).
     """
     with open_pdf(pdf_path) as document:
-        for page_index in range(len(document)):
-            page = document[page_index]
-            try:
-                yield _extract_page(page, page_index)
-            finally:
-                page.close()
+        yield from extract_native_from_document(document, pages=pages)
+
+
+def extract_native_from_document(
+    document: object,
+    *,
+    pages: set[int] | None = None,
+) -> Iterator[NativePage]:
+    """Yield :class:`NativePage`\\s from an already-opened pypdfium2 document.
+
+    Used by the orchestrator (phase 8) to share a single document
+    handle across native extraction and ML rasterisation, avoiding
+    redundant ``pypdfium2.PdfDocument`` instantiations on the same
+    file. ``pages`` filters page indices before extraction.
+    """
+    for page_index in range(len(document)):  # type: ignore[arg-type]
+        if pages is not None and page_index not in pages:
+            continue
+        page = document[page_index]  # type: ignore[index]
+        try:
+            yield _extract_page(page, page_index)
+        finally:
+            page.close()
 
 
 # ---- Per-page extraction ------------------------------------------------
