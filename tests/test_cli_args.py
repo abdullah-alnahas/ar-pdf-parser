@@ -371,6 +371,20 @@ def test_main_without_input_or_prefetch_errors(
     assert "input" in captured.err.lower()
 
 
+def test_prefetch_models_with_input_errors(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--prefetch-models FILE.pdf`` is a usage error (otherwise input is silently ignored)."""
+    import arabic_pdf_transcribe.cli as cli
+
+    pdf = tmp_path / "x.pdf"
+    pdf.write_bytes(b"")
+    with pytest.raises(SystemExit):
+        cli.main(["--prefetch-models", str(pdf)])
+    captured = capsys.readouterr()
+    assert "--prefetch-models" in captured.err
+
+
 def test_model_download_error_message_references_prefetch_flag() -> None:
     """ModelDownloadError messages must point users at ``--prefetch-models``."""
     from arabic_pdf_transcribe.errors import ModelDownloadError

@@ -66,7 +66,7 @@ predictable behaviour), prefetch the weights up front:
 arabic-pdf-transcribe --prefetch-models
 ```
 
-The command resolves the layout (`microsoft/dit-base-finetuned-rvlcdip`)
+The command resolves the layout (`cmarkea/dit-base-layout-detection`)
 and OCR (`stepfun-ai/GOT-OCR-2.0-hf`) models pinned in `models.toml`,
 populates the local Hugging Face cache, and exits 0. A `--config`
 override is honoured. If the weights are missing at run time (e.g. you

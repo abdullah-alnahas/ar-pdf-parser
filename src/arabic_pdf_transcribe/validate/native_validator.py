@@ -278,7 +278,7 @@ def validate_page(
     *,
     config: ValidatorConfig | None = None,
 ) -> ValidationResult:
-    """Apply the three signals to a :class:`NativePage` and return the verdict."""
+    """Apply the four signals to a :class:`NativePage` and return the verdict."""
     cfg = config or ValidatorConfig()
 
     if not page.has_text_layer:

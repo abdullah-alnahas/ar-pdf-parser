@@ -292,6 +292,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     ns = parser.parse_args(argv)
     if ns.prefetch_models:
+        if ns.input is not None:
+            parser.error("--prefetch-models does not accept an input file; pass it on its own")
         return _prefetch_models(_load_config_doc(ns.config))
     if ns.input is None:
         parser.error("the following arguments are required: input (or pass --prefetch-models)")
