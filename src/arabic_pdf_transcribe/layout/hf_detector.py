@@ -38,6 +38,7 @@ network, etc.). The CLI maps this exception to exit code 5.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ DEFAULT_REVISION = "1995237326c8b53d93525b7b19e20bb363b4eb73"
 # region as a coarse confidence proxy.
 DEFAULT_PIXEL_CONFIDENCE = 0.5
 DEFAULT_MIN_REGION_AREA_PX = 64
+DEFAULT_DEVICE = "auto"
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,7 @@ class HFLayoutDetectorConfig:
     pixel_confidence: float = DEFAULT_PIXEL_CONFIDENCE
     min_region_area_px: int = DEFAULT_MIN_REGION_AREA_PX
     detect_table_cells: bool = True
+    device: str = DEFAULT_DEVICE
 
     @classmethod
     def from_mapping(cls, mapping: object) -> HFLayoutDetectorConfig:
@@ -119,6 +122,10 @@ class HFDiTLayoutDetector:
         self._model: Any = None
         self._processor: Any = None
         self._id2label: dict[int, str] | None = None
+        # Resolved on first ``_ensure_loaded`` call. Sticky for the
+        # adapter's lifetime so a CUDA OOM can downgrade us to CPU
+        # for the rest of the run (issue #18 RC#1).
+        self._device: str | None = None
 
     def warm_up(self) -> None:
         """Force model + processor load now (otherwise lazy)."""
@@ -157,6 +164,20 @@ class HFDiTLayoutDetector:
         # Cast id2label keys to int — HF stores them as strings in JSON.
         raw = getattr(self._model.config, "id2label", {}) or {}
         self._id2label = {int(k): v for k, v in raw.items()}
+        # Issue #18 RC#1: place model on the resolved device. Without
+        # this, the segmentation forward pass ran on CPU even when
+        # CUDA was available — the same root cause as the OCR hang.
+        from arabic_pdf_transcribe._device import resolve_device
+
+        self._device = resolve_device(self.config.device)
+        move = getattr(self._model, "to", None)
+        if callable(move):
+            with contextlib.suppress(RuntimeError, ValueError):  # pragma: no cover
+                move(self._device)
+        switch = getattr(self._model, "eval", None)
+        if callable(switch):
+            with contextlib.suppress(Exception):  # pragma: no cover — stubs only
+                switch()
 
     def detect(self, page_image: PILImage, page_index: int) -> Sequence[Region]:
         """Return regions detected on ``page_image``.
@@ -172,8 +193,23 @@ class HFDiTLayoutDetector:
         import torch
 
         inputs = self._processor(images=page_image, return_tensors="pt")
-        with torch.no_grad():
-            outputs = self._model(**inputs)
+        inputs = _move_inputs_to_device(inputs, self._device or "cpu")
+        try:
+            with torch.no_grad():
+                outputs = self._model(**inputs)
+        except RuntimeError as exc:
+            if not _is_cuda_oom(exc) or self._device != "cuda":
+                raise
+            LOGGER.warning(
+                "layout: CUDA OOM during forward; falling back to CPU for the remainder of this run"
+            )
+            with contextlib.suppress(Exception):  # pragma: no cover — defensive
+                torch.cuda.empty_cache()
+            self._model.to("cpu")
+            self._device = "cpu"
+            inputs = _move_inputs_to_device(inputs, "cpu")
+            with torch.no_grad():
+                outputs = self._model(**inputs)
         logits = outputs.logits  # (1, num_labels, h, w)
         probs = torch.softmax(logits, dim=1)
         confidences, class_map = torch.max(probs, dim=1)  # (1, h, w) each
@@ -318,6 +354,32 @@ def _connected_components(
             mean_conf = sum(confs) / len(confs) if confs else 0.0
             components.append(((min_x, min_y, max_x + 1, max_y + 1), mean_conf))
     return components
+
+
+def _move_inputs_to_device(inputs: Any, device: str) -> Any:
+    """Move processor outputs to ``device``; tolerate plain-dict stubs."""
+    move = getattr(inputs, "to", None)
+    if callable(move):
+        try:
+            return move(device)
+        except (TypeError, AttributeError, RuntimeError):
+            pass
+    try:
+        import torch
+    except ImportError:  # pragma: no cover
+        return inputs
+    if not isinstance(inputs, dict):
+        return inputs
+    return {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in inputs.items()}
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """Detect a torch CUDA OOM without importing torch eagerly."""
+    cls = type(exc)
+    if cls.__name__ == "OutOfMemoryError" and (cls.__module__ or "").startswith("torch"):
+        return True
+    msg = str(exc).lower()
+    return "out of memory" in msg and "cuda" in msg
 
 
 def _fallback_single_cell_grid(bbox: BBox) -> TableGrid:

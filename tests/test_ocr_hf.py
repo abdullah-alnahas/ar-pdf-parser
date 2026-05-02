@@ -133,7 +133,12 @@ def test_default_config_pins_apache_licensed_got_ocr() -> None:
     # reproducibility contract.
     assert cfg.do_sample is False
     assert cfg.num_beams == 1
-    assert cfg.max_new_tokens == 4096
+    # Issue #18 lowered the default from 4096 to 1024 to bound CPU
+    # runaway generation; still > 3× a typical Arabic paragraph.
+    assert cfg.max_new_tokens == 1024
+    assert cfg.no_repeat_ngram_size == 3
+    assert cfg.repetition_penalty == 1.05
+    assert cfg.device == "auto"
 
 
 def test_transcriber_satisfies_protocol() -> None:
