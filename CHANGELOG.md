@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-05-02
+
+### Fixed
+
+- **`transformers==4.46.3` predates GOT-OCR-2.0 (issue #16)**: the pinned
+  version did not register the `got_ocr2` model type (added in
+  transformers 4.49.0). Every ML-branch page failed with
+  `ModelDownloadError` despite the model being correctly cached. Bumped
+  pin to `transformers==4.49.0`. Added a CI smoke test that
+  `MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES` registers `got_ocr2` —
+  catches future regressions on day one.
+- **DiT layout label `Formula` no longer drops Arabic body text (issue #16)**:
+  `cmarkea/dit-base-layout-detection` was trained on English research
+  papers and frequently mislabels justified Arabic body text as
+  `Formula` (39 such regions on a single page in the bug report).
+  Remapped `Formula → RegionRole.PARAGRAPH` so body text reaches the
+  emitter and the spurious "label X mapped to UNKNOWN" warnings are
+  silenced.
+- **JSON-log failure events now include the exception message (issue #16)**:
+  the `reason` field for typed pipeline errors was previously the
+  exception class name only, hiding the actionable hint baked into
+  the exception (e.g. the `--prefetch-models` recovery instruction
+  on `ModelDownloadError`). Now `f"{type(exc).__name__}:{exc}"`.
+
 ## [0.1.2] - 2026-05-02
 
 ### Fixed
