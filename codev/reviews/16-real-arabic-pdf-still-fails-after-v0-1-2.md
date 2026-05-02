@@ -61,7 +61,7 @@ Three independent regressions, piled on top of each other:
 
 | RC | File                                         | Change                                                |
 |----|----------------------------------------------|-------------------------------------------------------|
-| 1  | `pyproject.toml`                             | `transformers==4.46.3` → `transformers>=4.49,<4.50`   |
+| 1  | `pyproject.toml`                             | `transformers==4.46.3` → `transformers==4.49.0`        |
 | 2  | `src/arabic_pdf_transcribe/layout/_classes.py` | `"Formula": RegionRole.UNKNOWN` → `RegionRole.PARAGRAPH` |
 | 3  | `src/arabic_pdf_transcribe/pipeline.py`      | `reason = type(exc).__name__` → `f"{type(exc).__name__}:{exc}"` |
 
@@ -126,6 +126,7 @@ Full suite: **434 passed** (428 baseline + 6 new). Ruff clean.
 | Claude   | 1    | APPROVE | HIGH confidence, no key issues |
 | Codex    | 1    | REQUEST_CHANGES → addressed | (a) RC#1 smoke only exercised `AutoConfig`, not the failing `AutoModelForImageTextToText` path. (b) Missing `codev/reviews/16-*.md`. (c) Untracked `.claude/scheduled_tasks.lock`. All addressed in iter-2. |
 | Codex    | 2    | REQUEST_CHANGES → addressed | (a) RC#2 "silently dropped" claim was wrong — UNKNOWN renders as paragraph; rationale corrected and a stronger end-to-end regression test added. (b) Commit-message format concern (`[Spec N]...`) — past bugfixes (#12, #14) use the same `Fix #N: ...` format this PR uses, so the convention is bugfix-specific and the commits are consistent with project history. |
+| Codex    | 3    | REQUEST_CHANGES → addressed | (a) `transformers>=4.49,<4.50` range pin breaks the project's exact-pin convention used by every other ``[ml]`` entry. Tightened to `transformers==4.49.0` (the validated version) and updated the regression test to accept either form. |
 | Gemini   | 1    | N/A | Quota-exhausted on every retry (10 attempts); reviewer infrastructure failure, not a content verdict. |
 
 ## Lessons Learned

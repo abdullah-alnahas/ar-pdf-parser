@@ -58,18 +58,21 @@ def test_pyproject_pins_transformers_supporting_got_ocr2() -> None:
     """The ``[ml]`` extra must pin a transformers release that knows
     the GOT-OCR-2.0 model type (``got_ocr2``). The class landed in
     4.49.0; older pins silently mis-loaded the model. Issue #16 RC#1.
+
+    Accepts either an exact pin (``==4.49.0``, the project convention)
+    or a range with a ``>=4.49`` lower bound — both protect against
+    the regression. The minor version must be >= 49 either way.
     """
     text = PYPROJECT.read_text(encoding="utf-8")
     matches = re.findall(r'"transformers([^"]*)"', text)
     assert matches, "no transformers requirement found in pyproject.toml"
     spec = matches[0]
-    # Accept either ``>=4.49,<4.50`` or any pin >= 4.49.
-    lower_bound = re.search(r">=\s*4\.(\d+)", spec)
-    assert lower_bound is not None, (
-        f"transformers spec {spec!r} must declare a >=4.49 lower bound "
+    bound = re.search(r"(?:>=|==)\s*4\.(\d+)", spec)
+    assert bound is not None, (
+        f"transformers spec {spec!r} must declare a >=4.49 or ==4.49+ pin "
         f"(GOT-OCR-2.0 support landed in 4.49.0; see issue #16)"
     )
-    minor = int(lower_bound.group(1))
+    minor = int(bound.group(1))
     assert minor >= 49, (
         f"transformers spec {spec!r} pins minor {minor} < 49; "
         f"GOT-OCR-2.0 (model_type 'got_ocr2') is unrecognised below 4.49.0"
