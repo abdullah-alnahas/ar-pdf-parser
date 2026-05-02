@@ -43,6 +43,12 @@ DEFAULT_ALLOW = (
     "PSF-2.0",
     "Unlicense",
     "0BSD",
+    # HPND ("MIT-CMU style") is the historical Pillow license: an
+    # OSI-approved permissive license functionally equivalent to MIT
+    # plus a no-endorsement clause. Adding it as a first-class entry
+    # rather than an override because the [ml] extra makes Pillow a
+    # shipped runtime dep of the project.
+    "HPND",
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -55,9 +61,13 @@ DEFAULT_OVERRIDES_TOML = REPO_ROOT / "tools" / "license_audit_overrides.toml"
 ALIASES: dict[str, str] = {
     "mit license": "MIT",
     "mit": "MIT",
+    "mit-cmu": "HPND",  # Pillow's classifier label is "MIT-CMU"; SPDX is HPND.
+    "hpnd": "HPND",
+    "historical permission notice and disclaimer (hpnd)": "HPND",
     "apache license, version 2.0": "Apache-2.0",
     "apache 2.0": "Apache-2.0",
     "apache-2.0": "Apache-2.0",
+    "apache 2.0 license": "Apache-2.0",
     "apache software license": "Apache-2.0",
     "the apache software license, version 2.0": "Apache-2.0",
     "bsd license": "BSD-3-Clause",

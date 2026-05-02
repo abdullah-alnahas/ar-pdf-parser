@@ -1,10 +1,10 @@
 # Pinned Hugging Face model registry.
 #
-# Phase 1: the registry is intentionally empty. Phases 4 and 5 will append
-# entries for the chosen layout-detection and OCR / VLM models, each pinned by
-# commit revision (not floating tag) and tagged with the resolved license. The
-# license-audit harness (tools/license_audit.py) validates that every entry's
-# license is in the project's allow-list.
+# Each entry pins a Hugging Face model by commit revision (not a floating
+# tag) and records its license. The license-audit harness
+# (tools/license_audit.py) validates that every entry's license is in the
+# project's allow-list (MIT, Apache-2.0, BSD, ISC, MPL-2.0, PSF-2.0,
+# Unlicense, 0BSD).
 #
 # Schema (validated by tools/license_audit.py):
 #
@@ -15,7 +15,11 @@
 #   stage     = "layout" | "ocr"       # required, which pipeline stage
 #   footprint_mb = 0                   # optional, on-disk size
 #   source_url = "https://..."         # optional, model card URL
-#
-# The list intentionally starts empty.
 
-models = []
+[[models]]
+name = "cmarkea/dit-base-layout-detection"
+revision = "1995237326c8b53d93525b7b19e20bb363b4eb73"
+license = "Apache-2.0"
+stage = "layout"
+footprint_mb = 330
+source_url = "https://huggingface.co/cmarkea/dit-base-layout-detection"

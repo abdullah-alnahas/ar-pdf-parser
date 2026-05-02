@@ -29,6 +29,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DIGITAL_CLEAN = REPO_ROOT / "tests" / "fixtures" / "pdfs" / "digital-clean"
 DIGITAL_BROKEN = REPO_ROOT / "tests" / "fixtures" / "pdfs" / "digital-broken"
+IMAGE_SCAN = REPO_ROOT / "tests" / "fixtures" / "pdfs" / "image-scan"
 
 
 # Use a small set of Arabic words rendered as standalone glyphs (no
@@ -223,15 +224,72 @@ def _build_broken_replacement_glyphs() -> None:
     c.save()
 
 
+def _build_image_scan() -> None:
+    """Phase-4 image-scan fixture: a synthetic page whose text is rendered
+    as a flat raster image embedded in the PDF (no text layer at all).
+
+    Generation strategy: render a one-column page to a PIL image
+    (in-process, no system font dependency beyond Helvetica which
+    reportlab carries), then write that image as the only content of a
+    PDF page via reportlab's ``drawImage``. The result has zero
+    extractable text — the validator rejects it on phase 3 grounds and
+    the orchestrator routes it to the layout-detector adapter.
+    """
+    from io import BytesIO
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    out = IMAGE_SCAN / "scan-ar-1col.pdf"
+
+    # Step 1: render a synthetic page to a PIL image. We use a plain
+    # PIL Draw (no real Arabic shaping; we deliberately avoid pulling
+    # in arabic_reshaper / python-bidi — both LGPL — outside phase 9).
+    # Phase 9 will land scanned-real-Arabic fixtures with proper
+    # provenance.
+    from PIL import Image, ImageDraw
+
+    width_px, height_px = 850, 1100  # ~ letter at 100 DPI
+    img = Image.new("RGB", (width_px, height_px), color=(255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    # Draw a title and three paragraph lines with default font; the
+    # layout detector picks up the visual structure regardless of
+    # script.
+    draw.rectangle((50, 80, 800, 130), outline=(0, 0, 0), width=2)
+    draw.text((60, 95), "Synthetic image-scan fixture", fill=(0, 0, 0))
+    for i, line in enumerate(
+        [
+            "Paragraph line one — geometry-only.",
+            "Paragraph line two — no text layer.",
+            "Paragraph line three — phase 4 input.",
+        ]
+    ):
+        draw.text((60, 180 + i * 30), line, fill=(0, 0, 0))
+
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    # Step 2: write the image as the only content of a PDF page.
+    c = canvas.Canvas(str(out), pagesize=letter)
+    page_w, page_h = letter
+    c.drawImage(ImageReader(buffer), 0, 0, width=page_w, height=page_h)
+    c.showPage()
+    c.save()
+
+
 def main() -> int:
     DIGITAL_CLEAN.mkdir(parents=True, exist_ok=True)
     DIGITAL_BROKEN.mkdir(parents=True, exist_ok=True)
+    IMAGE_SCAN.mkdir(parents=True, exist_ok=True)
     _build_2col()
     _build_mixed()
     _build_table()
     real_arabic = _build_real_arabic()
     _build_broken_mojibake()
     _build_broken_replacement_glyphs()
+    _build_image_scan()
     names = [
         "digital-clean/lorem-ar-2col.pdf",
         "digital-clean/lorem-ar-en-mixed.pdf",
@@ -239,7 +297,13 @@ def main() -> int:
     ]
     if real_arabic:
         names.append("digital-clean/lorem-ar-real.pdf")
-    names.extend(["digital-broken/mojibake.pdf", "digital-broken/replacement-glyphs.pdf"])
+    names.extend(
+        [
+            "digital-broken/mojibake.pdf",
+            "digital-broken/replacement-glyphs.pdf",
+            "image-scan/scan-ar-1col.pdf",
+        ]
+    )
     fixtures_root = REPO_ROOT / "tests" / "fixtures" / "pdfs"
     for name in names:
         fixture = fixtures_root / name
