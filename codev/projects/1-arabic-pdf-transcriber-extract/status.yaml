@@ -46,6 +46,7 @@ gates:
     approved_at: '2026-05-02T12:19:52.971Z'
   verify-approval:
     status: pending
+    requested_at: '2026-05-02T12:20:36.478Z'
 iteration: 1
 build_complete: false
 history:
@@ -167,7 +168,7 @@ history:
         verdict: REQUEST_CHANGES
         file: codev/projects/1-arabic-pdf-transcriber-extract/1-phase_9_benchmark_corpus_and_docs-iter1-claude.txt
 started_at: '2026-05-01T18:20:53.792Z'
-updated_at: '2026-05-02T12:20:26.838Z'
+updated_at: '2026-05-02T12:20:36.478Z'
 pr_history:
   - phase: implement
     pr_number: 4
