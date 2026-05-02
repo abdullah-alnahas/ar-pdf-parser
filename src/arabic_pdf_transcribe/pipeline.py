@@ -40,7 +40,10 @@ from arabic_pdf_transcribe.errors import (
     ArabicPdfTranscribeError,
     OutOfMemoryDuringInference,
 )
-from arabic_pdf_transcribe.extract.native import NativePage, extract_native
+from arabic_pdf_transcribe.extract.native import (
+    NativePage,
+    extract_native_from_document,
+)
 from arabic_pdf_transcribe.regions import BBox, Region, RegionRole, RegionSource
 from arabic_pdf_transcribe.roles.classify import ClassifyConfig, classify_page
 from arabic_pdf_transcribe.validate.native_validator import (
@@ -106,22 +109,21 @@ class TranscribeResult:
 # ---------------------------------------------------------------------------
 
 
-def _rasterise_page_at_index(pdf_path: Path, page_index: int, *, dpi: int) -> PILImage:
-    """Open ``pdf_path``, rasterise ``page_index`` at ``dpi``, return image.
+def _rasterise_page_from_document(document: object, page_index: int, *, dpi: int) -> PILImage:
+    """Rasterise ``page_index`` at ``dpi`` using a shared document handle.
 
     The render uses :mod:`arabic_pdf_transcribe.layout._rasterise` which
-    in turn pulls Pillow lazily (gated behind the ``[ml]`` extra). The
-    document is closed deterministically on exit.
+    pulls Pillow lazily (gated behind the ``[ml]`` extra). The orchestrator
+    owns the document lifecycle; this helper only borrows the handle to
+    fetch a page, render it, and close that page.
     """
     from arabic_pdf_transcribe.layout._rasterise import rasterise_page
-    from arabic_pdf_transcribe.pdf._pypdfium2_loader import open_pdf
 
-    with open_pdf(pdf_path) as document:
-        page = document[page_index]
-        try:
-            return rasterise_page(page, dpi=dpi)
-        finally:
-            page.close()
+    page = document[page_index]  # type: ignore[index]
+    try:
+        return rasterise_page(page, dpi=dpi)
+    finally:
+        page.close()
 
 
 # ---------------------------------------------------------------------------
@@ -218,15 +220,20 @@ def transcribe(
     pages_out: list[PageOutcome] = []
     flat_regions: list[Region] = []
 
-    with _process_temp_dir() as _tmp:
-        # Cheap pre-pass: open the document just to get the total
-        # page count. The loader translates encrypted/corrupted
-        # errors at the boundary, so those exit codes fire here
-        # before any extraction work.
-        total = _count_pages(pdf_path)
-        for native_page in _iter_selected_native_pages(pdf_path, selected):
+    # Lazy-imported here so phase 9's TOML-config loader can stub the
+    # loader for unit tests without a full pypdfium2 install.
+    from arabic_pdf_transcribe.pdf._pypdfium2_loader import open_pdf
+
+    with _process_temp_dir() as _tmp, open_pdf(pdf_path) as document:
+        # Single document handle: page count, native extraction, and
+        # ML-branch rasterisation all share this one ``pypdfium2``
+        # instance. The loader translates encrypted/corrupted errors
+        # at the boundary, so those exit codes fire here before any
+        # extraction work.
+        total = len(document)
+        for native_page in extract_native_from_document(document, pages=selected):
             outcome = _process_page(
-                pdf_path=pdf_path,
+                document=document,
                 native_page=native_page,
                 total=total,
                 validator=actual_validator,
@@ -246,26 +253,6 @@ def transcribe(
     return TranscribeResult(pages=tuple(pages_out), regions=tuple(flat_regions))
 
 
-def _count_pages(pdf_path: Path) -> int:
-    """Open the document once just to read its page count."""
-    from arabic_pdf_transcribe.pdf._pypdfium2_loader import open_pdf
-
-    with open_pdf(pdf_path) as document:
-        return len(document)
-
-
-def _iter_selected_native_pages(pdf_path: Path, selected: set[int] | None) -> Iterator[NativePage]:
-    """Yield only native pages whose 0-based index is in ``selected``.
-
-    ``extract_native`` is iterator-shaped; we read it lazily and skip
-    the body for non-selected pages. The PDF is opened once.
-    """
-    for native_page in extract_native(pdf_path):
-        if selected is not None and native_page.page_index not in selected:
-            continue
-        yield native_page
-
-
 # ---------------------------------------------------------------------------
 # Per-page processing
 # ---------------------------------------------------------------------------
@@ -273,7 +260,7 @@ def _iter_selected_native_pages(pdf_path: Path, selected: set[int] | None) -> It
 
 def _process_page(
     *,
-    pdf_path: Path,
+    document: object,
     native_page: NativePage,
     total: int,
     validator: Callable[[NativePage, ValidatorConfig], ValidationResult],
@@ -289,6 +276,11 @@ def _process_page(
 ) -> PageOutcome:
     page_index = native_page.page_index
     _emit_progress(progress, page_index, total, "start")
+    # Track which branch was active when an exception fires so the
+    # failure-placeholder region carries the correct ``RegionSource``
+    # (NATIVE for validator/native-extract failures; OCR for ML-branch
+    # failures). Mutated as the page progresses.
+    branch_state = {"branch": "native"}
     try:
         result = validator(native_page, validator_config)
         if result.accept:
@@ -308,8 +300,9 @@ def _process_page(
                 validation=result,
             )
         # ML fallback.
+        branch_state["branch"] = "ml"
         regions = _run_ml_branch(
-            pdf_path=pdf_path,
+            document=document,
             native_page=native_page,
             layout_detector=layout_detector,
             ocr_transcriber=ocr_transcriber,
@@ -332,13 +325,13 @@ def _process_page(
                 f"page {page_index + 1}: {exc}; reduce --max-workers or rasterisation DPI"
             ) from exc
         _emit_progress(progress, page_index, total, f"failure:{reason}")
-        return _failure_outcome(page_index, native_page, reason)
+        return _failure_outcome(page_index, native_page, reason, branch_state["branch"])
     except ArabicPdfTranscribeError as exc:
         reason = type(exc).__name__
         if strict:
             raise
         _emit_progress(progress, page_index, total, f"failure:{reason}")
-        return _failure_outcome(page_index, native_page, reason)
+        return _failure_outcome(page_index, native_page, reason, branch_state["branch"])
     except RuntimeError as exc:
         # ``torch.cuda.OutOfMemoryError`` subclasses RuntimeError —
         # detect by class name + module so we don't have to import
@@ -351,18 +344,31 @@ def _process_page(
                     f"reduce --max-workers or rasterisation DPI"
                 ) from exc
             _emit_progress(progress, page_index, total, "failure:cuda_out_of_memory")
-            return _failure_outcome(page_index, native_page, "cuda_out_of_memory")
+            return _failure_outcome(
+                page_index, native_page, "cuda_out_of_memory", branch_state["branch"]
+            )
         reason = f"{type(exc).__name__}:{exc}"
         if strict:
             raise
         _emit_progress(progress, page_index, total, f"failure:{reason}")
-        return _failure_outcome(page_index, native_page, reason)
+        return _failure_outcome(page_index, native_page, reason, branch_state["branch"])
     except Exception as exc:
+        # Bare-except trade-off: this is the per-page boundary for the
+        # spec's "best-effort default" contract — if an upstream stage
+        # raises an unexpected exception we MUST NOT abort the whole
+        # run; a single failed page becomes a placeholder so the rest
+        # of the document still transcribes. Typed exceptions
+        # (Memory/ArabicPdfTranscribe/RuntimeError-CUDA-OOM) are
+        # handled in dedicated arms above and surface specific
+        # ``failure_reason`` strings; this catch-all only fires for
+        # genuinely unexpected errors and records the type+message
+        # verbatim. With ``--strict`` the original exception is
+        # re-raised, preserving the traceback.
         reason = f"{type(exc).__name__}:{exc}"
         if strict:
             raise
         _emit_progress(progress, page_index, total, f"failure:{reason}")
-        return _failure_outcome(page_index, native_page, reason)
+        return _failure_outcome(page_index, native_page, reason, branch_state["branch"])
 
 
 def _is_cuda_oom(exc: BaseException) -> bool:
@@ -374,7 +380,7 @@ def _is_cuda_oom(exc: BaseException) -> bool:
 
 def _run_ml_branch(
     *,
-    pdf_path: Path,
+    document: object,
     native_page: NativePage,
     layout_detector: LayoutDetector | None,
     ocr_transcriber: OCRTranscriber | None,
@@ -388,7 +394,7 @@ def _run_ml_branch(
             "ML branch needed for page "
             f"{native_page.page_index + 1} but no layout_detector / ocr_transcriber wired"
         )
-    page_image = _rasterise_page_at_index(pdf_path, native_page.page_index, dpi=dpi)
+    page_image = _rasterise_page_from_document(document, native_page.page_index, dpi=dpi)
     detected = list(layout_detector.detect(page_image, native_page.page_index))
     transcribed: list[Region] = []
     for region in detected:
@@ -422,13 +428,26 @@ def _post_process_regions(
     return classify_page(reordered, page_width, page_height, config=classify_cfg)
 
 
-def _failure_outcome(page_index: int, native_page: NativePage, reason: str) -> PageOutcome:
-    """Synthesise a single-region failure placeholder for the page."""
+def _failure_outcome(
+    page_index: int,
+    native_page: NativePage,
+    reason: str,
+    branch: str,
+) -> PageOutcome:
+    """Synthesise a single-region failure placeholder for the page.
+
+    ``branch`` records which stage was running when the exception
+    fired (``"native"`` or ``"ml"``); the resulting placeholder
+    region's :class:`RegionSource` reflects that so downstream tools
+    know whether the failure happened in the deterministic native
+    path or the ML branch.
+    """
+    source = RegionSource.OCR if branch == "ml" else RegionSource.NATIVE
     placeholder = Region.as_failure_placeholder(
         reason=reason,
         page_index=page_index,
         bbox=BBox(0.0, 0.0, native_page.page_width, native_page.page_height),
-        source=RegionSource.NATIVE,
+        source=source,
     )
     return PageOutcome(
         page_index=page_index,

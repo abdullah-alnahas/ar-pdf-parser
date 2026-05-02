@@ -110,6 +110,14 @@ class OCRConfig:
     temperature: float = 1.0
     padding_px: int = DEFAULT_PADDING_PX
 
+    @classmethod
+    def from_mapping(cls, mapping: object) -> OCRConfig:
+        """Build an OCR config from a TOML ``[ocr]`` section dict."""
+        if not isinstance(mapping, dict):
+            return cls()
+        kwargs = {k: v for k, v in mapping.items() if k in cls.__dataclass_fields__}
+        return cls(**kwargs)  # type: ignore[arg-type]
+
 
 class HFGotOCRTranscriber:
     """Concrete :class:`OCRTranscriber` backed by GOT-OCR-2.0.

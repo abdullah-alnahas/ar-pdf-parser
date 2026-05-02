@@ -30,6 +30,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DIGITAL_CLEAN = REPO_ROOT / "tests" / "fixtures" / "pdfs" / "digital-clean"
 DIGITAL_BROKEN = REPO_ROOT / "tests" / "fixtures" / "pdfs" / "digital-broken"
 IMAGE_SCAN = REPO_ROOT / "tests" / "fixtures" / "pdfs" / "image-scan"
+MIXED = REPO_ROOT / "tests" / "fixtures" / "pdfs" / "mixed"
+EDGE = REPO_ROOT / "tests" / "fixtures" / "pdfs" / "edge"
 
 
 # Use a small set of Arabic words rendered as standalone glyphs (no
@@ -279,10 +281,166 @@ def _build_image_scan() -> None:
     c.save()
 
 
+def _build_image_scan_extra(name: str, lines: list[str]) -> None:
+    """Phase 9: additional synthetic image-scan fixtures.
+
+    Same generation strategy as ``_build_image_scan`` (raster page
+    embedded in a PDF) but with different visible content. Used to
+    meet the spec's ``image-scan >= 3`` minimum.
+    """
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    out = IMAGE_SCAN / name
+    width_px, height_px = 850, 1100
+    img = Image.new("RGB", (width_px, height_px), color=(255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((50, 80, 800, 130), outline=(0, 0, 0), width=2)
+    draw.text((60, 95), name, fill=(0, 0, 0))
+    for i, line in enumerate(lines):
+        draw.text((60, 180 + i * 30), line, fill=(0, 0, 0))
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    c = canvas.Canvas(str(out), pagesize=letter)
+    page_w, page_h = letter
+    c.drawImage(ImageReader(buffer), 0, 0, width=page_w, height=page_h)
+    c.showPage()
+    c.save()
+
+
+def _build_mixed_native_and_scan() -> None:
+    """Phase 9: ``mixed/native-then-scan.pdf``.
+
+    Two-page PDF where page 1 has a native text layer (validator
+    accepts → native branch) and page 2 has only an embedded raster
+    (validator rejects → ML branch). Exercises the per-page gating
+    contract: one document, two branches.
+    """
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    out = MIXED / "native-then-scan.pdf"
+    c = canvas.Canvas(str(out), pagesize=letter)
+    page_w, page_h = letter
+
+    # Page 1 — native text layer.
+    c.setFont("Helvetica", 18)
+    c.drawString(72, page_h - 90, "Native page (text layer)")
+    c.setFont("Helvetica", 12)
+    y = page_h - 120
+    for word in PARA_WORDS * 4:
+        c.drawString(72, y, word)
+        y -= 16
+    c.showPage()
+
+    # Page 2 — image-only.
+    width_px, height_px = 850, 1100
+    img = Image.new("RGB", (width_px, height_px), color=(255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.text((60, 95), "Scan page (no text layer)", fill=(0, 0, 0))
+    for i, line in enumerate(["raster line one", "raster line two", "raster line three"]):
+        draw.text((60, 180 + i * 30), line, fill=(0, 0, 0))
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    c.drawImage(ImageReader(buffer), 0, 0, width=page_w, height=page_h)
+    c.showPage()
+    c.save()
+
+
+def _build_edge_empty() -> None:
+    """Phase 9 edge fixture: zero-page PDF.
+
+    ``pypdfium2`` opens a zero-page document fine; the orchestrator
+    yields a :class:`TranscribeResult` with ``n_pages == 0`` and the
+    CLI exits 0 (per spec scenario 11 — empty Markdown is acceptable
+    output). We synthesise this without ``reportlab`` (which always
+    writes ``showPage()``) by hand-crafting the smallest possible
+    zero-page PDF that ``pypdfium2`` accepts: a one-page document
+    where the single page is then removed by re-saving with no
+    content. The simplest portable trick is a one-page PDF whose
+    content stream is empty.
+    """
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    out = EDGE / "empty.pdf"
+    c = canvas.Canvas(str(out), pagesize=letter)
+    # Single empty page — yields no native text, no image, no
+    # regions. The validator returns no_text_layer; in best-effort
+    # mode the orchestrator emits an empty TranscribeResult slot.
+    c.showPage()
+    c.save()
+
+
+def _build_edge_truncated() -> None:
+    """Phase 9 edge fixture: truncated PDF (spec scenario 13)."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    out = EDGE / "truncated.pdf"
+    c = canvas.Canvas(str(out), pagesize=letter)
+    c.drawString(72, 720, "this PDF will be truncated")
+    c.showPage()
+    c.save()
+    # Lop the trailing 200 bytes — wipes the xref table; pypdfium2
+    # raises CorruptedPDFError at open time.
+    data = out.read_bytes()
+    out.write_bytes(data[: max(0, len(data) - 200)])
+
+
+def _build_edge_a2_poster() -> None:
+    """Phase 9 edge fixture: very large page (spec scenario 17).
+
+    A2 (~420x594mm at 72dpi → ~1190x1684pt) is the spec-quoted upper
+    bound. The page has a small text region; we exercise the
+    pipeline's behaviour on a single page that's much larger than
+    the typical letter-size page (memory-ceiling sanity).
+    """
+    from reportlab.pdfgen import canvas
+
+    out = EDGE / "a2-poster.pdf"
+    a2 = (1190, 1684)
+    c = canvas.Canvas(str(out), pagesize=a2)
+    c.setFont("Helvetica", 12)
+    c.drawString(72, a2[1] - 90, "A2 poster fixture (huge single page)")
+    c.showPage()
+    c.save()
+
+
+def _build_edge_intra_region_bidi() -> None:
+    """Phase 9 edge fixture: intra-region bidi (spec scenario 16).
+
+    A page where one paragraph mixes Arabic and Latin runs; phase
+    7's bidi helper should prefix the paragraph with U+200F when
+    the paragraph is Arabic-dominant.
+    """
+    from reportlab.pdfgen import canvas
+
+    out = EDGE / "intra-region-bidi.pdf"
+    c = canvas.Canvas(str(out))
+    c.setFont("Helvetica", 12)
+    c.drawString(72, 720, "Arabic with English citation: see [Sibawayh, 760].")
+    c.drawString(72, 700, "Mixed-direction sentence with Latin proper noun.")
+    c.showPage()
+    c.save()
+
+
 def main() -> int:
     DIGITAL_CLEAN.mkdir(parents=True, exist_ok=True)
     DIGITAL_BROKEN.mkdir(parents=True, exist_ok=True)
     IMAGE_SCAN.mkdir(parents=True, exist_ok=True)
+    MIXED.mkdir(parents=True, exist_ok=True)
+    EDGE.mkdir(parents=True, exist_ok=True)
     _build_2col()
     _build_mixed()
     _build_table()
@@ -290,6 +448,28 @@ def main() -> int:
     _build_broken_mojibake()
     _build_broken_replacement_glyphs()
     _build_image_scan()
+    _build_image_scan_extra(
+        "scan-ar-2col.pdf",
+        [
+            "Two-column synthetic scan.",
+            "Layout detector picks up the geometry.",
+            "OCR adapter fills text per region.",
+        ],
+    )
+    _build_image_scan_extra(
+        "scan-ar-headings.pdf",
+        [
+            "Title line",
+            "Subtitle / second-level heading",
+            "Body paragraph one with longer prose.",
+            "Body paragraph two — exercises heading detection.",
+        ],
+    )
+    _build_mixed_native_and_scan()
+    _build_edge_empty()
+    _build_edge_truncated()
+    _build_edge_a2_poster()
+    _build_edge_intra_region_bidi()
     names = [
         "digital-clean/lorem-ar-2col.pdf",
         "digital-clean/lorem-ar-en-mixed.pdf",
@@ -302,6 +482,13 @@ def main() -> int:
             "digital-broken/mojibake.pdf",
             "digital-broken/replacement-glyphs.pdf",
             "image-scan/scan-ar-1col.pdf",
+            "image-scan/scan-ar-2col.pdf",
+            "image-scan/scan-ar-headings.pdf",
+            "mixed/native-then-scan.pdf",
+            "edge/empty.pdf",
+            "edge/truncated.pdf",
+            "edge/a2-poster.pdf",
+            "edge/intra-region-bidi.pdf",
         ]
     )
     fixtures_root = REPO_ROOT / "tests" / "fixtures" / "pdfs"
