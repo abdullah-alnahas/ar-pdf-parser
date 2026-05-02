@@ -1,7 +1,7 @@
 id: bugfix-14
 title: real-arabic-pdf-still-produces
 protocol: bugfix
-phase: fix
+phase: pr
 plan_phases: []
 current_plan_phase: null
 gates: {}
@@ -9,4 +9,4 @@ iteration: 1
 build_complete: false
 history: []
 started_at: '2026-05-02T13:32:26.138Z'
-updated_at: '2026-05-02T13:49:58.882Z'
+updated_at: '2026-05-02T13:50:58.501Z'
