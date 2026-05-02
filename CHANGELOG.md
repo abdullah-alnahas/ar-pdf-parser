@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-05-03
+
+### Fixed
+
+- **ML inference no longer hangs on CPU when CUDA is available (issue #18)**:
+  the OCR + layout adapters never moved their model or processed inputs to
+  the GPU; CUDA-equipped hosts ran every region on CPU and pages with many
+  regions appeared to hang for 30-60 minutes. New
+  `arabic_pdf_transcribe._device.resolve_device("auto"|"cuda"|"cpu")` is
+  shared by both adapters; both call `.to(device)` and switch to inference
+  mode after `from_pretrained`, and move processor outputs via
+  `BatchEncoding.to(device)`. CUDA OOM mid-run logs a one-line warning and
+  downgrades the adapter to CPU for the remainder of the document.
+- **Per-region progress logging (issue #18)**: pipeline now emits a
+  `region` event before each OCR call (`{event:"region",region:i,of_regions:R,role:"PARAGRAPH"}`
+  under `--json-logs`; text-mode equivalent in default output) plus a
+  `layout` event before the layout-detect call. Long ML pages no longer
+  appear frozen.
+- **Bounded OCR decoding (issue #18)**: `OCRConfig.max_new_tokens` lowered
+  from 4096 to 1024 (still > 3× a typical Arabic paragraph). Added
+  `no_repeat_ngram_size=3` and `repetition_penalty=1.05` defaults to
+  prevent the Qwen2 head from looping on adversarial Arabic crops.
+
+### Added
+
+- **`--device {auto,cuda,cpu}` CLI flag and `[runtime].device` TOML section
+  (issue #18)**: precedence chain CLI > `[runtime]` > per-section
+  `[layout]/[ocr].device` > `"auto"`.
+
 ## [0.1.3] - 2026-05-02
 
 ### Fixed
