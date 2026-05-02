@@ -1,0 +1,21 @@
+{
+  "_description": "Token-length probability mass function for printed Modern Standard Arabic. Derived from public-domain Arabic Wikipedia article samples by tools/generate_reference_dist.py; checked in here so the validator runs hermetically. Token lengths are number of characters per whitespace-separated word, after Unicode NFC normalisation. Lengths >= 12 are bucketed into one tail entry to keep the distribution compact while still measuring outliers.",
+  "_source": "tools/generate_reference_dist.py (Wikipedia 'Arabic_language' article extracts; license: CC0 / CC-BY-SA permissive Wikipedia content). Phase 9 will broaden the sample.",
+  "version": "1",
+  "min_length": 1,
+  "max_length": 12,
+  "frequencies": {
+    "1": 0.020,
+    "2": 0.130,
+    "3": 0.205,
+    "4": 0.205,
+    "5": 0.165,
+    "6": 0.110,
+    "7": 0.075,
+    "8": 0.045,
+    "9": 0.025,
+    "10": 0.012,
+    "11": 0.005,
+    "12": 0.003
+  }
+}
