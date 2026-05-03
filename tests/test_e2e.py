@@ -317,7 +317,7 @@ def test_ml_path_cer_below_tolerance_real_models() -> None:
     Skipped on PR CI (real HF model load + ~580 MB OCR weights);
     runs in the nightly workflow with the HF cache. Uses the
     ``image-scan`` corpus and the real ``HFDiTLayoutDetector`` +
-    ``HFGotOCRTranscriber`` adapters. The reference Markdown lives
+    ``HFQwen2VLOCRTranscriber`` adapters. The reference Markdown lives
     next to each ``image-scan/*.pdf`` fixture as ``*.expected.md``;
     this iteration adds the slow stub — references will be filled
     in during the post-v1 corpus expansion follow-up.

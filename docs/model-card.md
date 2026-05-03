@@ -41,27 +41,33 @@ configurable confidence threshold and minimum region area).
 - No native table-cell decomposition — `layout/_table_cells.py` runs a
   separate morphology pass on detected `TABLE` regions.
 
-## OCR — `stepfun-ai/GOT-OCR-2.0-hf`
+## OCR — `Qwen/Qwen2-VL-2B-Instruct`
 
 | Field | Value |
 |---|---|
-| Hugging Face id | `stepfun-ai/GOT-OCR-2.0-hf` |
-| Pinned revision | `d3017ef2c2c1395888c8d635c5e0508bcb0ac78d` |
-| Architecture | GOT-OCR-2.0 vision-language model |
+| Hugging Face id | `Qwen/Qwen2-VL-2B-Instruct` |
+| Pinned revision | `895c3a49bc3fa70a340399125c650a463535e71c` |
+| Architecture | Qwen2-VL chat-style vision-language model (`Qwen2VLForConditionalGeneration`) |
 | License | Apache-2.0 |
-| Footprint | ~1.1 GB on disk (per `models.toml`) |
-| Inputs | RGB image of one cropped region |
+| Footprint | ~4.4 GB on disk; ~4 GB fp16 VRAM (per `models.toml`) |
+| Inputs | RGB image of one cropped region + chat-template prompt |
 | Outputs | UTF-8 text |
-| Adapter | `arabic_pdf_transcribe.ocr.hf_ocr.HFGotOCRTranscriber` |
+| Adapter | `arabic_pdf_transcribe.ocr.hf_ocr.HFQwen2VLOCRTranscriber` |
 | Lazy load | `transformers` / `torch` import deferred to first `transcribe()` call |
 | Decoding | Greedy (`do_sample=False`, `num_beams=1`) by default for reproducibility |
 
 ### Selection rationale
 
-GOT-OCR-2.0 was chosen for permissive licensing (Apache-2.0) and
-documented Arabic support. The spec deferred final selection to the
-plan/research step; the chosen model's pinned revision is recorded in
-`models.toml` so the license-audit harness can verify it.
+The original v0.1.x default, `stepfun-ai/GOT-OCR-2.0-hf`, was trained
+predominantly on English + Chinese OCR corpora. On Arabic body text it
+fell back to LaTeX math-italic substitutions (U+1D400 block) per
+glyph and produced unusable output (issue #26). Qwen2-VL-2B-Instruct
+is Apache-2.0 (clean for the license audit), has documented strong
+multilingual coverage including Arabic, and at ~4 GB fp16 fits the 6
+GB GPU budget alongside the DiT layout model with the eviction-
+between-stages strategy from issue #20. Each OCR call wraps the
+cropped region in Qwen2-VL's chat template with a deterministic
+Arabic-aware prompt asking for verbatim text extraction.
 
 ### Known limitations
 
@@ -70,6 +76,8 @@ plan/research step; the chosen model's pinned revision is recorded in
 - Per-region inference is one model call per region; pages with many
   small regions (dense magazines, ledger-style tables) are slower than
   page-level OCR. Phase-9 perf tuning lives in the post-v1 follow-up.
+- The chat-style invocation adds a small fixed prompt overhead
+  (~30-40 tokens) per region versus GOT-OCR-2.0's pure-image input.
 
 ## Reproducibility scope
 

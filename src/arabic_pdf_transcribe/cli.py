@@ -588,7 +588,7 @@ def _maybe_build_ml_adapters(
             HFDiTLayoutDetector,
             HFLayoutDetectorConfig,
         )
-        from arabic_pdf_transcribe.ocr.hf_ocr import HFGotOCRTranscriber, OCRConfig
+        from arabic_pdf_transcribe.ocr.hf_ocr import HFQwen2VLOCRTranscriber, OCRConfig
     except ImportError:
         return None, None
     layout_cfg = HFLayoutDetectorConfig.from_mapping((doc or {}).get("layout"))
@@ -625,7 +625,7 @@ def _maybe_build_ml_adapters(
         if force_dtype or not ocr_has_dtype:
             ocr_cfg = replace(ocr_cfg, dtype=dtype)
     try:
-        return HFDiTLayoutDetector(layout_cfg), HFGotOCRTranscriber(ocr_cfg)
+        return HFDiTLayoutDetector(layout_cfg), HFQwen2VLOCRTranscriber(ocr_cfg)
     except Exception:  # pragma: no cover — defensive; constructors are cheap
         return None, None
 

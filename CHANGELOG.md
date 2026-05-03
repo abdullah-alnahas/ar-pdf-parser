@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Default OCR model swapped to Qwen2-VL-2B-Instruct (issue #26)**: the
+  previous default, `stepfun-ai/GOT-OCR-2.0-hf`, was trained almost
+  exclusively on English + Chinese OCR corpora. On real Arabic body
+  text the model fell back to its closest learned pattern — LaTeX
+  math-italic substitutions in the U+1D400 Mathematical Alphanumeric
+  Symbols block — producing 1-3 garbage codepoints per paragraph
+  region (a 3.4 KB unusable output on a 7-page input). The default is
+  now `Qwen/Qwen2-VL-2B-Instruct` (Apache-2.0, multilingual training
+  corpus including Arabic, ~4.4 GB on disk, ~4 GB fp16 VRAM). The
+  `OCRTranscriber` Protocol is unchanged; the concrete adapter
+  switched from `HFGotOCRTranscriber` to `HFQwen2VLOCRTranscriber`.
+  Each OCR call now wraps the cropped region in Qwen2-VL's chat
+  template (`apply_chat_template(messages, add_generation_prompt=True)`
+  followed by `processor(text=[prompt], images=[crop])`). The
+  `stop_strings="<|im_end|>"` plumbing from issue #24 is no longer
+  needed — Qwen2-VL emits a proper EOS at the natural end of each
+  assistant turn. New regression test (`test_issue_26_regression.py`)
+  pins the model name, license, and chat-template invocation surface.
+
 ## [0.1.7] - 2026-05-03
 
 ### Fixed

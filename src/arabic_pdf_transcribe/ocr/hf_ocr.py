@@ -1,27 +1,40 @@
-"""Hugging Face GOT-OCR-2.0 OCR adapter.
+"""Hugging Face OCR adapter (Qwen2-VL-2B-Instruct).
 
 # Model selection
 
-Phase 5 selected ``stepfun-ai/GOT-OCR-2.0-hf`` as the default OCR
-transcriber after weighing four candidates against the spec
-constraints (see plan phase 5 deliverables, ``models.toml``, and the
-phase-5 PR description for the full benchmark write-up):
+Issue #26 swapped the default OCR transcriber from
+``stepfun-ai/GOT-OCR-2.0-hf`` to ``Qwen/Qwen2-VL-2B-Instruct``.
+
+GOT-OCR-2.0 was selected in phase 5 partly because Arabic-strong
+alternatives blew the spec's CPU-RSS budget (MBZUAI/AIN at ~14 GB) or
+had blocking licenses (Nougat-Arabic GPL-3.0). On the real Foulabook
+Arabic corpus the model produced unusable output: every paragraph
+region collapsed to 1-3 LaTeX math-italic codepoints (U+1D400 block,
+Mathematical Alphanumeric Symbols), single Latin words, or replacement
+glyphs. Root cause: the GOT-OCR-2.0 training corpus is dominated by
+English + Chinese document OCR; Arabic appears only in trace amounts.
+Faced with Arabic body text the model fell back to its closest learned
+pattern — "this looks like rendered math, output LaTeX" — and emitted
+math-italic substitutions per glyph.
 
 | Candidate                         | License            | Footprint | Arabic       | Verdict |
 |-----------------------------------|--------------------|-----------|--------------|---------|
-| **GOT-OCR-2.0-hf**                | Apache-2.0         | ~1.1 GB   | multilingual | **chosen** |
-| MBZUAI/AIN (Qwen2-VL 7B)          | MIT                | ~14 GB    | Arabic-strong | rejected on footprint (blows the spec's 8 GB CPU-RSS budget alongside the layout model) |
-| MohamedRashad/arabic-large-nougat | GPL-3.0            | ~1.4 GB   | Arabic-trained | rejected on license (GPL fails project allow-list) |
-| facebook/nougat-base              | CC-BY-NC-4.0       | ~1.4 GB   | Latin-only    | rejected on both license (NC) and language coverage |
+| **Qwen/Qwen2-VL-2B-Instruct**     | Apache-2.0         | ~4 GB fp16 | strong multilingual incl. Arabic | **chosen** |
+| stepfun-ai/GOT-OCR-2.0-hf         | Apache-2.0         | ~1.1 GB   | English/Chinese-only | issue #26: unusable on Arabic |
+| MBZUAI/AIN (Qwen2-VL 7B)          | MIT                | ~14 GB    | Arabic-strong | rejected on footprint |
+| MohamedRashad/arabic-large-nougat | GPL-3.0            | ~1.4 GB   | Arabic-trained | rejected on license |
+| facebook/nougat-base              | CC-BY-NC-4.0       | ~1.4 GB   | Latin-only    | rejected on both license and language |
+| OpenGVLab/InternVL2-2B            | MIT                | ~4 GB     | multilingual  | viable backup |
 
-GOT-OCR-2.0 is a unified end-to-end document-OCR model with
-``GotOcr2ForConditionalGeneration`` head support in
-``transformers``. Trained on multilingual document corpora; Arabic
-support is documented but not benchmarked against MSA-specific
-adversarial inputs in v1. Phase 9's corpus expansion will measure
-CER and may swap the default to a fine-tuned Arabic checkpoint
-(swapping is a one-file change in this module — the ``OCRTranscriber``
-Protocol is the integration boundary).
+Qwen2-VL-2B-Instruct is a chat-style vision-language model with
+``Qwen2VLForConditionalGeneration`` head support in
+``transformers>=4.45``; the project pins ``transformers==4.49.0``.
+The processor exposes a chat-template API: each call wraps the cropped
+region in a single user-turn message that contains the image and a
+short Arabic-aware instruction prompt, and decodes the assistant's
+response back into plain text. The integration boundary
+(:class:`OCRTranscriber` Protocol) is unchanged — only the
+implementation in this module changed.
 
 # Lazy-import discipline
 
@@ -37,24 +50,33 @@ library into ``sys.modules``.
 
 ``OCRConfig`` exposes the deterministic decoder defaults:
 
-* ``max_new_tokens=4096`` — caps output length per region; protects
-  against unterminated generation on adversarial inputs.
-* ``num_beams=1`` — greedy decoding by default. Beam search is opt-in
-  via ``num_beams=4``; deterministic, no sampling.
+* ``max_new_tokens=512`` — caps output length per region.
+* ``num_beams=1`` — greedy decoding by default.
 * ``do_sample=False`` — required for byte-identical reproducibility
-  on the ML path (spec's "reproducibility" line).
+  on the ML path.
 * ``temperature=1.0`` — irrelevant when sampling is disabled, but
   pinned for documentation.
 
+Qwen2-VL emits a built-in EOS at the end of each assistant turn, so
+no ``stop_strings`` plumbing is needed (unlike GOT-OCR-2.0, which
+required forwarding ``<|im_end|>`` as a stop string — issue #24).
+
+# Prompt
+
+A short, deterministic prompt asks the model to extract Arabic body
+text verbatim with no commentary. The prompt is multilingual-tolerant
+(it keeps Latin words / digits intact) so mixed Arabic-Latin layouts
+still survive.
+
 # Confidence
 
-GOT-OCR-2.0 generates text via auto-regressive decoding; HF's
-``model.generate(...)`` returns logits when ``output_scores=True``.
-The adapter aggregates per-token scores into a region-level
-confidence in ``[0, 1]`` (geometric mean of softmax probabilities of
-the chosen tokens). When the model is replaced by one that does not
-expose token logits, the adapter records ``confidence=None`` —
-phase 6 / phase 7 are confidence-aware and degrade gracefully.
+Qwen2-VL-2B-Instruct generates text via auto-regressive decoding;
+HF's ``model.generate(...)`` returns logits when
+``output_scores=True``. The adapter aggregates per-token scores into a
+region-level confidence in ``[0, 1]`` (geometric mean of softmax
+probabilities of the chosen tokens). When the score tensors cannot be
+aligned (e.g. early stopping on EOS misaligns the scores tuple on
+some transformers versions), the adapter records ``confidence=None``.
 
 # Offline / cache-miss handling
 
@@ -95,8 +117,8 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "stepfun-ai/GOT-OCR-2.0-hf"
-DEFAULT_REVISION = "d3017ef2c2c1395888c8d635c5e0508bcb0ac78d"
+DEFAULT_MODEL = "Qwen/Qwen2-VL-2B-Instruct"
+DEFAULT_REVISION = "895c3a49bc3fa70a340399125c650a463535e71c"
 # Issue #18 RC#3 lowered the cap from 4096 → 1024. Issue #20 RC#4
 # lowers it again 1024 → 512: with KV cache scaling linearly in
 # seq_len (and SDPA attention quadratically), the 1024 ceiling
@@ -105,18 +127,20 @@ DEFAULT_REVISION = "d3017ef2c2c1395888c8d635c5e0508bcb0ac78d"
 # with very long regions can override via [ocr].max_new_tokens.
 DEFAULT_MAX_NEW_TOKENS = 512
 DEFAULT_NUM_BEAMS = 1
-# Belt-and-suspenders against repetition loops on adversarial crops
-# (the failure mode 4096 was originally papering over).
+# Belt-and-suspenders against repetition loops on adversarial crops.
 DEFAULT_NO_REPEAT_NGRAM_SIZE = 3
 DEFAULT_REPETITION_PENALTY = 1.05
 DEFAULT_DEVICE = "auto"
 DEFAULT_DTYPE = "auto"
-# Issue #24: GOT-OCR-2.0 uses a chat-template ending with this special
-# token; without forwarding it as ``stop_strings`` (and ``tokenizer=``
-# so generate can detect it in the decoded output) the model never
-# stops at the natural end of OCR text and emits sampled noise until
-# ``max_new_tokens`` runs out.
-OCR_STOP_STRING = "<|im_end|>"
+# Issue #26: deterministic Arabic-aware OCR prompt. Wrapped in
+# Qwen2-VL's chat-template format on every call. Kept short to bound
+# the input-token count (KV cache pressure) and explicit about the
+# script so the model does not transliterate or summarise.
+OCR_PROMPT = (
+    "Extract all visible text from this image, preserving the "
+    "original script (Arabic, Latin, or digits). Output only the "
+    "verbatim text — no translation, no commentary, no formatting."
+)
 
 
 @dataclass(frozen=True)
@@ -139,6 +163,7 @@ class OCRConfig:
     repetition_penalty: float = DEFAULT_REPETITION_PENALTY
     device: str = DEFAULT_DEVICE
     dtype: str = DEFAULT_DTYPE
+    prompt: str = OCR_PROMPT
 
     @classmethod
     def from_mapping(cls, mapping: object) -> OCRConfig:
@@ -149,8 +174,8 @@ class OCRConfig:
         return cls(**kwargs)  # type: ignore[arg-type]
 
 
-class HFGotOCRTranscriber:
-    """Concrete :class:`OCRTranscriber` backed by GOT-OCR-2.0.
+class HFQwen2VLOCRTranscriber:
+    """Concrete :class:`OCRTranscriber` backed by Qwen2-VL-2B-Instruct.
 
     Constructed lazily: model + processor load on first
     ``transcribe`` call (or on explicit ``warm_up()``), so a
@@ -284,6 +309,34 @@ class HFGotOCRTranscriber:
             return ("", None)
         return self._transcribe_image(crop)
 
+    def _build_inputs(self, image: PILImage) -> Any:
+        """Wrap ``image`` in Qwen2-VL's chat-template prompt and tokenize.
+
+        Issue #26: Qwen2-VL is a chat-style VLM. Each OCR call sends a
+        single user turn whose content is ``[image, text-prompt]``.
+        The processor renders that into the model's chat template
+        (with ``add_generation_prompt=True`` so the assistant turn is
+        primed), then tokenises image + text in one call.
+        """
+        assert self._processor is not None
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": self.config.prompt},
+                ],
+            }
+        ]
+        text_prompt = self._processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        return self._processor(
+            text=[text_prompt],
+            images=[image],
+            return_tensors="pt",
+        )
+
     def _transcribe_image(self, image: PILImage) -> tuple[str, float | None]:
         """Run model on one cropped image and return (text, confidence)."""
         self._ensure_loaded()
@@ -293,10 +346,7 @@ class HFGotOCRTranscriber:
         import torch
 
         try:
-            inputs = self._processor(
-                images=image,
-                return_tensors="pt",
-            )
+            inputs = self._build_inputs(image)
             inputs = move_inputs_to_device(inputs, self._device or "cpu", dtype=self._dtype)
             outputs = self._run_generate(inputs, torch)
         except OCRTranscriptionError:
@@ -361,17 +411,13 @@ class HFGotOCRTranscriber:
                 return self._model.generate(**cpu_inputs, **kwargs)
 
     def _generate_kwargs(self) -> dict[str, Any]:
-        """Decoding kwargs forwarded to ``model.generate`` (DRY across retries).
+        """Decoding kwargs forwarded to ``model.generate``.
 
-        Issue #24: GOT-OCR-2.0's chat-template generation never emits
-        a built-in EOS at the natural end of OCR output; the upstream
-        recipe relies on ``stop_strings="<|im_end|>"`` (paired with
-        ``tokenizer=`` so generate can decode the running output to
-        match the stop string) to terminate cleanly. Without this
-        pair, generation runs to ``max_new_tokens`` and the trailing
-        tokens are sampled noise — math symbols, CJK, control bytes.
+        Qwen2-VL emits a built-in EOS at the end of each assistant
+        turn, so generation terminates cleanly without the
+        ``stop_strings`` plumbing GOT-OCR-2.0 needed (issue #24).
         """
-        kwargs: dict[str, Any] = {
+        return {
             "max_new_tokens": self.config.max_new_tokens,
             "num_beams": self.config.num_beams,
             "do_sample": self.config.do_sample,
@@ -381,11 +427,6 @@ class HFGotOCRTranscriber:
             "return_dict_in_generate": True,
             "output_scores": True,
         }
-        tokenizer = getattr(self._processor, "tokenizer", None)
-        if tokenizer is not None:
-            kwargs["tokenizer"] = tokenizer
-            kwargs["stop_strings"] = OCR_STOP_STRING
-        return kwargs
 
 
 def _confidence_from_scores(outputs: Any, gen_tokens: Any) -> float | None:
@@ -394,9 +435,9 @@ def _confidence_from_scores(outputs: Any, gen_tokens: Any) -> float | None:
     Returns ``None`` when the model did not expose per-token scores
     (e.g. wrapped models that override ``generate`` and drop
     ``output_scores``) or when the score tensors cannot be aligned
-    with ``gen_tokens`` (issue #24: ``stop_strings`` truncates the
-    output mid-step, which on some transformers versions misaligns
-    the scores tuple — degrade to ``None`` rather than raising).
+    with ``gen_tokens`` (early EOS truncates the output mid-step,
+    which on some transformers versions misaligns the scores tuple —
+    degrade to ``None`` rather than raising).
     """
     try:
         import torch
@@ -429,6 +470,7 @@ def _confidence_from_scores(outputs: Any, gen_tokens: Any) -> float | None:
 __all__ = [
     "DEFAULT_MODEL",
     "DEFAULT_REVISION",
-    "HFGotOCRTranscriber",
+    "OCR_PROMPT",
+    "HFQwen2VLOCRTranscriber",
     "OCRConfig",
 ]

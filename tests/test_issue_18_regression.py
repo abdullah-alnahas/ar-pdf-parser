@@ -36,7 +36,7 @@ from arabic_pdf_transcribe.ocr.hf_ocr import (
     DEFAULT_MAX_NEW_TOKENS,
     DEFAULT_NO_REPEAT_NGRAM_SIZE,
     DEFAULT_REPETITION_PENALTY,
-    HFGotOCRTranscriber,
+    HFQwen2VLOCRTranscriber,
     OCRConfig,
 )
 
@@ -84,7 +84,7 @@ def test_repetition_controls_passed_to_generate() -> None:
 
             return _Out()
 
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
     transcriber._processor = _StubProcessor()
     transcriber._model = _CapturingModel()
     from PIL import Image
@@ -171,7 +171,7 @@ def test_ocr_adapter_moves_model_to_resolved_device(
         staticmethod(_fake_model),
     )
 
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
     transcriber._ensure_loaded()
     assert transcriber._device == "cuda"
     assert recording_model.to_calls == ["cuda"]
@@ -231,7 +231,10 @@ def test_ocr_inputs_move_to_device_via_batch_to(
             return self
 
     class _ProcessorReturningBatch:
-        def __call__(self, *, images: object, return_tensors: str) -> Any:
+        def apply_chat_template(self, messages: object, **_: object) -> str:
+            return "fake-prompt"
+
+        def __call__(self, **kwargs: object) -> Any:
             import torch
 
             batch = _Batch()
@@ -242,7 +245,7 @@ def test_ocr_inputs_move_to_device_via_batch_to(
         def batch_decode(self, *args: object, **kwargs: object) -> list[str]:
             return [""]
 
-    transcriber = HFGotOCRTranscriber(OCRConfig(device="cpu"))
+    transcriber = HFQwen2VLOCRTranscriber(OCRConfig(device="cpu"))
     transcriber._processor = _ProcessorReturningBatch()
     transcriber._device = "cpu"
 
@@ -451,7 +454,10 @@ class _LayoutConfig:
 
 
 class _StubProcessor:
-    def __call__(self, *, images: object, return_tensors: str) -> Any:
+    def apply_chat_template(self, messages: object, **_: object) -> str:
+        return "fake-prompt"
+
+    def __call__(self, **kwargs: object) -> Any:
         import torch
 
         return {
