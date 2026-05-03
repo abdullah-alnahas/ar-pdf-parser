@@ -25,9 +25,16 @@ footprint_mb = 330
 source_url = "https://huggingface.co/cmarkea/dit-base-layout-detection"
 
 [[models]]
-name = "stepfun-ai/GOT-OCR-2.0-hf"
-revision = "d3017ef2c2c1395888c8d635c5e0508bcb0ac78d"
+# Issue #26: GOT-OCR-2.0-hf was trained almost exclusively on
+# English/Chinese document corpora; it had no real Arabic coverage and
+# fell back to LaTeX-math-italic substitutions (U+1D400 block) for
+# every Arabic glyph, producing unusable output. Swapped to
+# Qwen2-VL-2B-Instruct: Apache-2.0, multilingual training corpus with
+# real Arabic, ~4 GB fp16 footprint (fits 6 GB GPU alongside the DiT
+# layout model with a small headroom for activations).
+name = "Qwen/Qwen2-VL-2B-Instruct"
+revision = "895c3a49bc3fa70a340399125c650a463535e71c"
 license = "Apache-2.0"
 stage = "ocr"
-footprint_mb = 1100
-source_url = "https://huggingface.co/stepfun-ai/GOT-OCR-2.0-hf"
+footprint_mb = 4400
+source_url = "https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct"

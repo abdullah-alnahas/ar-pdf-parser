@@ -46,7 +46,7 @@ from arabic_pdf_transcribe.ocr.hf_ocr import (
 )
 from arabic_pdf_transcribe.ocr.hf_ocr import (
     DEFAULT_MAX_NEW_TOKENS,
-    HFGotOCRTranscriber,
+    HFQwen2VLOCRTranscriber,
     OCRConfig,
 )
 
@@ -148,7 +148,7 @@ def test_ocr_adapter_passes_torch_dtype_to_from_pretrained(
     )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
-    transcriber = HFGotOCRTranscriber(OCRConfig(dtype="float16"))
+    transcriber = HFQwen2VLOCRTranscriber(OCRConfig(dtype="float16"))
     transcriber._ensure_loaded()
     assert captured.get("torch_dtype") is torch.float16
 
@@ -216,7 +216,7 @@ def test_dtype_omitted_when_unset_keeps_fp32_path(
     )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
-    transcriber = HFGotOCRTranscriber(OCRConfig())
+    transcriber = HFQwen2VLOCRTranscriber(OCRConfig())
     transcriber._ensure_loaded()
     assert captured.get("torch_dtype") is torch.float32
 
@@ -331,7 +331,7 @@ def test_ocr_oom_retries_once_on_gpu_then_falls_back_to_cpu() -> None:
     pytest.importorskip("torch")
     import torch
 
-    transcriber = HFGotOCRTranscriber(OCRConfig(device="cuda"))
+    transcriber = HFQwen2VLOCRTranscriber(OCRConfig(device="cuda"))
     transcriber._device = "cuda"
     transcriber._oom_retry_used = False
 
@@ -377,7 +377,7 @@ def test_ocr_oom_retry_succeeds_keeps_model_on_gpu() -> None:
     pytest.importorskip("torch")
     import torch
 
-    transcriber = HFGotOCRTranscriber(OCRConfig(device="cuda"))
+    transcriber = HFQwen2VLOCRTranscriber(OCRConfig(device="cuda"))
     transcriber._device = "cuda"
     transcriber._oom_retry_used = False
 

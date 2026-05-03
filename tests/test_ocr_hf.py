@@ -1,8 +1,9 @@
-"""Phase-5 HF GOT-OCR adapter tests with stubbed model.
+"""Phase-5 HF OCR adapter tests with stubbed model.
 
-The adapter wraps ``stepfun-ai/GOT-OCR-2.0-hf``. Tests stub the
-``transformers`` ``processor`` + ``model`` so the adapter exercises
-its end-to-end flow against deterministic fake outputs.
+The adapter wraps ``Qwen/Qwen2-VL-2B-Instruct`` (issue #26 swap from
+``stepfun-ai/GOT-OCR-2.0-hf``). Tests stub the ``transformers``
+``processor`` + ``model`` so the adapter exercises its end-to-end
+flow against deterministic fake outputs.
 
 A separate ``@pytest.mark.slow`` test loads the real model and runs
 it on a region from the phase-4 image-scan fixture; it is skipped by
@@ -25,7 +26,7 @@ from arabic_pdf_transcribe.ocr import OCRTranscriber  # noqa: E402
 from arabic_pdf_transcribe.ocr.hf_ocr import (  # noqa: E402
     DEFAULT_MODEL,
     DEFAULT_REVISION,
-    HFGotOCRTranscriber,
+    HFQwen2VLOCRTranscriber,
     OCRConfig,
 )
 from arabic_pdf_transcribe.regions import (  # noqa: E402
@@ -43,19 +44,42 @@ from arabic_pdf_transcribe.regions import (  # noqa: E402
 
 
 class _FakeProcessor:
-    """Minimal stub mirroring the parts of HF AutoProcessor we touch."""
+    """Minimal stub mirroring the parts of HF AutoProcessor we touch.
+
+    Qwen2-VL's processor exposes ``apply_chat_template`` (rendering
+    the messages list into the model's chat-template string) and is
+    callable with ``text=[...]``, ``images=[...]``, ``return_tensors``.
+    """
 
     def __init__(self, fake_text: str = "أ ب ج") -> None:
         self.fake_text = fake_text
-        self.calls: list[object] = []
+        self.calls: list[dict[str, object]] = []
+        self.chat_template_calls: list[list[object]] = []
 
-    def __call__(self, *, images: object, return_tensors: str) -> dict[str, object]:
+    def apply_chat_template(
+        self,
+        messages: list[object],
+        *,
+        tokenize: bool = False,
+        add_generation_prompt: bool = True,
+    ) -> str:
+        self.chat_template_calls.append(messages)
+        return "<|im_start|>user\nfake-prompt<|im_end|>\n<|im_start|>assistant\n"
+
+    def __call__(
+        self,
+        *,
+        text: list[str] | None = None,
+        images: list[object] | None = None,
+        return_tensors: str = "pt",
+    ) -> dict[str, object]:
         import torch
 
-        self.calls.append(images)
+        self.calls.append({"text": text, "images": images, "return_tensors": return_tensors})
         return {
             "pixel_values": torch.zeros((1, 3, 224, 224)),
             "input_ids": torch.zeros((1, 1), dtype=torch.long),
+            "attention_mask": torch.ones((1, 1), dtype=torch.long),
         }
 
     def batch_decode(self, sequences: object, *, skip_special_tokens: bool = True) -> list[str]:
@@ -105,7 +129,7 @@ def _make_paragraph(bbox: BBox | None = None) -> Region:
 
 
 def _attach_stubs(
-    transcriber: HFGotOCRTranscriber,
+    transcriber: HFQwen2VLOCRTranscriber,
     *,
     text: str = "أ ب ج",
     tokens: list[int] | None = None,
@@ -122,11 +146,15 @@ def _attach_stubs(
 # ---------------------------------------------------------------------------
 
 
-def test_default_config_pins_apache_licensed_got_ocr() -> None:
+def test_default_config_pins_apache_licensed_qwen2_vl() -> None:
     cfg = OCRConfig()
     assert cfg.model == DEFAULT_MODEL
     assert cfg.revision == DEFAULT_REVISION
-    assert DEFAULT_MODEL == "stepfun-ai/GOT-OCR-2.0-hf"
+    # Issue #26: default OCR model is Qwen2-VL-2B-Instruct
+    # (Apache-2.0, multilingual incl. Arabic). The previous default,
+    # GOT-OCR-2.0-hf, produced LaTeX-math-italic garbage for Arabic
+    # body text — see issue #26 for the full diagnosis.
+    assert DEFAULT_MODEL == "Qwen/Qwen2-VL-2B-Instruct"
     assert len(DEFAULT_REVISION) == 40
     assert all(c in "0123456789abcdef" for c in DEFAULT_REVISION)
     # Deterministic decoding defaults — required for the spec's
@@ -135,22 +163,24 @@ def test_default_config_pins_apache_licensed_got_ocr() -> None:
     assert cfg.num_beams == 1
     # Issue #18 lowered the default from 4096 to 1024 to bound CPU
     # runaway generation; issue #20 lowered it again to 512 to keep
-    # per-region peak VRAM within 6 GB. Still ~5× a typical Arabic
-    # paragraph's tokenisation.
+    # per-region peak VRAM within 6 GB.
     assert cfg.max_new_tokens == 512
     assert cfg.no_repeat_ngram_size == 3
     assert cfg.repetition_penalty == 1.05
     assert cfg.device == "auto"
     assert cfg.dtype == "auto"
+    # Issue #26: OCR prompt must mention Arabic so the VLM does not
+    # transliterate or summarise.
+    assert "Arabic" in cfg.prompt or "arabic" in cfg.prompt.lower()
 
 
 def test_transcriber_satisfies_protocol() -> None:
-    assert isinstance(HFGotOCRTranscriber(), OCRTranscriber)
+    assert isinstance(HFQwen2VLOCRTranscriber(), OCRTranscriber)
 
 
 def test_transcribe_paragraph_fills_text_and_confidence() -> None:
     pytest.importorskip("torch")
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
     _attach_stubs(transcriber, text="أ ب ج")
     region = _make_paragraph()
     image = Image.new("RGB", (200, 100), color=(255, 255, 255))
@@ -169,7 +199,7 @@ def test_transcribe_paragraph_fills_text_and_confidence() -> None:
 def test_figure_region_passes_through_unchanged() -> None:
     """FIGURE regions are not OCR'd in v1 (spec contract)."""
     pytest.importorskip("torch")
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
     # Stubs intentionally NOT attached — calling them would error.
     figure = Region(
         page_index=0,
@@ -186,7 +216,7 @@ def test_figure_region_passes_through_unchanged() -> None:
 
 def test_table_region_walks_cells_filling_each() -> None:
     pytest.importorskip("torch")
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
     _attach_stubs(transcriber, text="cell")
     grid = TableGrid(
         rows=(
@@ -227,7 +257,7 @@ def test_table_region_without_grid_raises_ocr_error() -> None:
     a TABLE region with ``None``, that is a bug upstream — surface it
     as :class:`OCRTranscriptionError`."""
     pytest.importorskip("torch")
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
     table = Region(
         page_index=2,
         bbox=BBox(10.0, 10.0, 90.0, 50.0),
@@ -243,7 +273,7 @@ def test_table_region_without_grid_raises_ocr_error() -> None:
 
 def test_degenerate_bbox_raises_ocr_error() -> None:
     pytest.importorskip("torch")
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
     _attach_stubs(transcriber)
     region = Region(
         page_index=0,
@@ -260,7 +290,7 @@ def test_degenerate_bbox_raises_ocr_error() -> None:
 
 def test_generate_failure_raises_ocr_transcription_error() -> None:
     pytest.importorskip("torch")
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
 
     class _ExplodingModel:
         def generate(self, **kwargs: object) -> object:
@@ -276,7 +306,7 @@ def test_generate_failure_raises_ocr_transcription_error() -> None:
 
 def test_ensure_loaded_raises_model_download_error_on_transformers_missing() -> None:
     """transformers ImportError → ModelDownloadError (CLI exit 5)."""
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
     sentinel = "transformers"
     saved = sys.modules.pop(sentinel, None)
     fake_module = types.ModuleType("transformers")
@@ -295,7 +325,7 @@ def test_degenerate_table_cell_returns_empty_silently() -> None:
     """A single bad cell should not abort the whole table — empty
     cells render fine in MD/Word."""
     pytest.importorskip("torch")
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
     _attach_stubs(transcriber, text="ok")
     grid = TableGrid(
         rows=(
@@ -354,7 +384,7 @@ def test_real_model_loads_and_transcribes_image_scan_region() -> None:
         role=RegionRole.PARAGRAPH,
         source=RegionSource.OCR,
     )
-    transcriber = HFGotOCRTranscriber()
+    transcriber = HFQwen2VLOCRTranscriber()
     result = transcriber.transcribe(region, image)
     assert result.text != ""
     # Confidence is optional but the default model exposes scores.

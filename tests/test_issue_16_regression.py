@@ -54,14 +54,15 @@ PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 # ---------------------------------------------------------------------------
 
 
-def test_pyproject_pins_transformers_supporting_got_ocr2() -> None:
+def test_pyproject_pins_transformers_supporting_default_ocr_model() -> None:
     """The ``[ml]`` extra must pin a transformers release that knows
-    the GOT-OCR-2.0 model type (``got_ocr2``). The class landed in
-    4.49.0; older pins silently mis-loaded the model. Issue #16 RC#1.
+    the default OCR model's type. Issue #26 swapped the default to
+    ``Qwen/Qwen2-VL-2B-Instruct`` (model_type ``qwen2_vl``); Qwen2-VL
+    support landed in transformers 4.45.0. The original #16 RC pinned
+    ``>=4.49`` for ``got_ocr2``; that pin still satisfies qwen2_vl.
 
     Accepts either an exact pin (``==4.49.0``, the project convention)
-    or a range with a ``>=4.49`` lower bound — both protect against
-    the regression. The minor version must be >= 49 either way.
+    or a range with a ``>=4.45`` lower bound.
     """
     text = PYPROJECT.read_text(encoding="utf-8")
     matches = re.findall(r'"transformers([^"]*)"', text)
@@ -69,53 +70,49 @@ def test_pyproject_pins_transformers_supporting_got_ocr2() -> None:
     spec = matches[0]
     bound = re.search(r"(?:>=|==)\s*4\.(\d+)", spec)
     assert bound is not None, (
-        f"transformers spec {spec!r} must declare a >=4.49 or ==4.49+ pin "
-        f"(GOT-OCR-2.0 support landed in 4.49.0; see issue #16)"
+        f"transformers spec {spec!r} must declare a >=4.45 or ==4.45+ pin "
+        f"(Qwen2-VL support landed in 4.45.0; see issue #26)"
     )
     minor = int(bound.group(1))
-    assert minor >= 49, (
-        f"transformers spec {spec!r} pins minor {minor} < 49; "
-        f"GOT-OCR-2.0 (model_type 'got_ocr2') is unrecognised below 4.49.0"
+    assert minor >= 45, (
+        f"transformers spec {spec!r} pins minor {minor} < 45; "
+        f"Qwen2-VL (model_type 'qwen2_vl') is unrecognised below 4.45.0"
     )
 
 
-def test_got_ocr2_class_is_registered_in_auto_image_text_to_text() -> None:
-    """``AutoModelForImageTextToText`` must know about ``got_ocr2``.
+def test_default_ocr_model_type_is_registered_in_auto_image_text_to_text() -> None:
+    """``AutoModelForImageTextToText`` must know about ``qwen2_vl``.
 
-    The original failure surface was ``AutoModelForImageTextToText
-    .from_pretrained`` raising on the unknown ``got_ocr2`` model type —
-    not just ``AutoConfig``. The auto-class mapping is populated at
-    import time from a name-only registry (``MODEL_FOR_*_MAPPING_NAMES``),
-    so this check exercises the exact failing API path with zero
-    network or weight I/O. Skipped when the ``[ml]`` extra is absent.
+    Issue #26: the default OCR model is now Qwen2-VL-2B-Instruct.
+    The auto-class mapping is populated at import time from a
+    name-only registry (``MODEL_FOR_*_MAPPING_NAMES``), so this check
+    exercises the exact failing API path with zero network or weight
+    I/O. Skipped when the ``[ml]`` extra is absent.
     """
     pytest.importorskip("transformers")
     from transformers.models.auto.modeling_auto import (
         MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES,
     )
 
-    # Re-key into a plain ``dict[str, str]`` so the membership / lookup
-    # is not gated by transformers' ``Literal``-narrowed stubs (those
-    # lag the runtime registry by minor versions and would force a
-    # type-ignore here for a value that exists at runtime).
     mapping: dict[str, str] = {
         str(k): str(v) for k, v in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES.items()
     }
-    assert "got_ocr2" in mapping, (
+    assert "qwen2_vl" in mapping, (
         "AutoModelForImageTextToText has no entry for model_type "
-        "'got_ocr2'; transformers is too old (<4.49). This is the "
+        "'qwen2_vl'; transformers is too old (<4.45). This is the "
         "exact API path that exploded on every ML-branch page in #16."
     )
-    assert mapping["got_ocr2"] == "GotOcr2ForConditionalGeneration", (
-        f"unexpected got_ocr2 mapping target {mapping['got_ocr2']!r}; "
+    assert mapping["qwen2_vl"] == "Qwen2VLForConditionalGeneration", (
+        f"unexpected qwen2_vl mapping target {mapping['qwen2_vl']!r}; "
         f"upstream may have renamed the class — check OCR adapter."
     )
 
 
-def test_got_ocr2_config_instantiates_when_transformers_installed() -> None:
-    """If the GOT-OCR-2.0 config is in the local HF cache, ``AutoConfig``
-    must instantiate it. Network-free. Skipped when transformers is
-    absent or the config is not cached (CI without prefetched cache).
+def test_default_ocr_model_config_instantiates_when_transformers_installed() -> None:
+    """If the default OCR model's config is in the local HF cache,
+    ``AutoConfig`` must instantiate it. Network-free. Skipped when
+    transformers is absent or the config is not cached (CI without
+    prefetched cache).
     """
     transformers = pytest.importorskip("transformers")
     AutoConfig = transformers.AutoConfig
@@ -128,10 +125,10 @@ def test_got_ocr2_config_instantiates_when_transformers_installed() -> None:
             local_files_only=True,
         )
     except Exception as exc:  # pragma: no cover — no cache in CI
-        pytest.skip(f"GOT-OCR-2.0 config not cached locally ({type(exc).__name__})")
-    assert cfg.model_type == "got_ocr2", (
+        pytest.skip(f"OCR model config not cached locally ({type(exc).__name__})")
+    assert cfg.model_type == "qwen2_vl", (
         f"AutoConfig returned model_type={cfg.model_type!r}; "
-        f"expected 'got_ocr2'. transformers may be too old (<4.49)."
+        f"expected 'qwen2_vl'. transformers may be too old (<4.45)."
     )
 
 

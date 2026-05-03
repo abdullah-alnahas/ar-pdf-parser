@@ -218,10 +218,13 @@ def test_ocr_adapter_casts_pixel_values_to_model_dtype() -> None:
     fp16 ``Linear`` inside ``_StubGenerateModel`` raises the exact issue-22
     error if the adapter forgot to cast inputs to fp16.
     """
-    from arabic_pdf_transcribe.ocr.hf_ocr import HFGotOCRTranscriber, OCRConfig
+    from arabic_pdf_transcribe.ocr.hf_ocr import HFQwen2VLOCRTranscriber, OCRConfig
 
     class _StubProcessor:
-        def __call__(self, *, images: object, return_tensors: str) -> dict[str, Any]:
+        def apply_chat_template(self, messages: object, **_: object) -> str:
+            return "fake-prompt"
+
+        def __call__(self, **kwargs: object) -> dict[str, Any]:
             return {
                 "pixel_values": torch.zeros((1, 3, 4, 4), dtype=torch.float32),
                 "input_ids": torch.tensor([[101, 102]], dtype=torch.int64),
@@ -259,7 +262,7 @@ def test_ocr_adapter_casts_pixel_values_to_model_dtype() -> None:
             out.scores = ()
             return out
 
-    transcriber = HFGotOCRTranscriber(OCRConfig(device="cpu", dtype="float16"))
+    transcriber = HFQwen2VLOCRTranscriber(OCRConfig(device="cpu", dtype="float16"))
     transcriber._processor = _StubProcessor()
     transcriber._model = _StubGenerateModel()
     transcriber._device = "cpu"

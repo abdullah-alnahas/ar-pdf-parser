@@ -4,7 +4,7 @@ Importing :mod:`arabic_pdf_transcribe.ocr` (the public Protocol
 module) and :mod:`arabic_pdf_transcribe.ocr.hf_ocr` (the concrete
 adapter) must NOT pull ``transformers`` / ``torch`` / ``Pillow`` /
 ``huggingface_hub`` into ``sys.modules``. Heavy deps load only when
-``HFGotOCRTranscriber._ensure_loaded()`` runs (on first
+``HFQwen2VLOCRTranscriber._ensure_loaded()`` runs (on first
 ``transcribe`` call or explicit ``warm_up()``).
 """
 

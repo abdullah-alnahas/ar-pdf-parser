@@ -67,7 +67,7 @@ arabic-pdf-transcribe --prefetch-models
 ```
 
 The command resolves the layout (`cmarkea/dit-base-layout-detection`)
-and OCR (`stepfun-ai/GOT-OCR-2.0-hf`) models pinned in `models.toml`,
+and OCR (`Qwen/Qwen2-VL-2B-Instruct`) models pinned in `models.toml`,
 populates the local Hugging Face cache, and exits 0. A `--config`
 override is honoured. If the weights are missing at run time (e.g. you
 ran a page through ML without prefetching first), the CLI fails with
@@ -169,7 +169,7 @@ flowchart TD
     VAL -- accept --> ROL[reorder + classify]
     VAL -- reject --> RST[rasterise]
     RST --> LD[layout detect HF DiT]
-    LD --> OCR[per-region OCR HF GOT-OCR-2.0]
+    LD --> OCR[per-region OCR Qwen2-VL-2B]
     OCR --> ROL
     ROL --> EMD[emit_markdown]
     ROL --> EDX[emit_docx]
@@ -178,7 +178,7 @@ flowchart TD
 ```
 
 - **Native path** (no ML model load): clean digital Arabic PDFs.
-- **ML path**: layout detection (DiT-base) → per-region OCR (GOT-OCR-2.0) on rasterised pages.
+- **ML path**: layout detection (DiT-base) → per-region OCR (Qwen2-VL-2B-Instruct) on rasterised pages.
 - **Validator** decides per page; mixed PDFs work in one document.
 
 ## Models (default pipeline)
@@ -186,7 +186,7 @@ flowchart TD
 | Stage | Model | Revision (pinned) | License | ~Size |
 |---|---|---|---|---|
 | Layout | `cmarkea/dit-base-layout-detection` | `1995237326c8b53d93525b7b19e20bb363b4eb73` | Apache-2.0 | ~330 MB |
-| OCR | `stepfun-ai/GOT-OCR-2.0-hf` | `d3017ef2c2c1395888c8d635c5e0508bcb0ac78d` | Apache-2.0 | ~1.1 GB |
+| OCR | `Qwen/Qwen2-VL-2B-Instruct` | `895c3a49bc3fa70a340399125c650a463535e71c` | Apache-2.0 | ~4.4 GB |
 
 See [`docs/model-card.md`](docs/model-card.md) for the full per-model card,
 including selection rationale (the DiT model was chosen over DocLayout-YOLO and
