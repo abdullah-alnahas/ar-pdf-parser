@@ -35,3 +35,7 @@ venv/
 .DS_Store
 *.swp
 *.swo
+
+# Notebook cache (regenerable, large) — but keep notebooks/out/ for audit
+notebooks/.cache/
+notebooks/.ipynb_checkpoints/

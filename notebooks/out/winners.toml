@@ -1,0 +1,6 @@
+# Survey winners (auto-generated)
+[layout]
+model = "full-page"
+
+[ocr]
+model = "surya"
