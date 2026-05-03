@@ -142,6 +142,10 @@ class HFDiTLayoutDetector:
         # adapter's lifetime so a CUDA OOM can downgrade us to CPU
         # for the rest of the run (issue #18 RC#1).
         self._device: str | None = None
+        # Issue #22 RC#1: image processors return fp32 ``pixel_values``
+        # regardless of how the model was loaded; we must cast inputs to
+        # the model dtype before forward when running fp16/bf16.
+        self._dtype: Any = None
 
     def warm_up(self) -> None:
         """Force model + processor load now (otherwise lazy)."""
@@ -167,6 +171,7 @@ class HFDiTLayoutDetector:
         # to pick bf16/fp16 (CUDA) or stay fp32 (CPU). Issue #20 RC#1.
         self._device = resolve_device(self.config.device)
         torch_dtype = resolve_dtype(self.config.dtype, self._device)
+        self._dtype = torch_dtype
         load_kwargs: dict[str, Any] = {"revision": self.config.revision}
         if torch_dtype is not None:
             load_kwargs["torch_dtype"] = torch_dtype
@@ -213,7 +218,7 @@ class HFDiTLayoutDetector:
             with contextlib.suppress(Exception):
                 self._model.to("cuda")
         inputs = self._processor(images=page_image, return_tensors="pt")
-        inputs = move_inputs_to_device(inputs, self._device or "cpu")
+        inputs = move_inputs_to_device(inputs, self._device or "cpu", dtype=self._dtype)
         try:
             with torch.no_grad():
                 outputs = self._model(**inputs)
@@ -227,7 +232,7 @@ class HFDiTLayoutDetector:
                 torch.cuda.empty_cache()
             self._model.to("cpu")
             self._device = "cpu"
-            inputs = move_inputs_to_device(inputs, "cpu")
+            inputs = move_inputs_to_device(inputs, "cpu", dtype=self._dtype)
             with torch.no_grad():
                 outputs = self._model(**inputs)
         logits = outputs.logits  # (1, num_labels, h, w)

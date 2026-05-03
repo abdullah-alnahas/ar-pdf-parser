@@ -159,6 +159,10 @@ class HFGotOCRTranscriber:
         self._model: Any = None
         self._processor: Any = None
         self._device: str | None = None
+        # Issue #22 RC#1: cast fp32 image inputs to model dtype before
+        # forward when running fp16/bf16, otherwise the forward raises
+        # "Input type (float) and bias type (c10::Half) should be the same".
+        self._dtype: Any = None
         # Issue #20 RC#3: a CUDA OOM gets one in-place retry on GPU
         # (after empty_cache) before we permanently fall back to CPU.
         # The flag stays set across regions so a subsequent OOM falls
@@ -189,6 +193,7 @@ class HFGotOCRTranscriber:
         # bf16 / fp16 only when actually heading to CUDA.
         self._device = resolve_device(self.config.device)
         torch_dtype = resolve_dtype(self.config.dtype, self._device)
+        self._dtype = torch_dtype
         load_kwargs: dict[str, Any] = {"revision": self.config.revision}
         if torch_dtype is not None:
             load_kwargs["torch_dtype"] = torch_dtype
@@ -286,7 +291,7 @@ class HFGotOCRTranscriber:
                 images=image,
                 return_tensors="pt",
             )
-            inputs = move_inputs_to_device(inputs, self._device or "cpu")
+            inputs = move_inputs_to_device(inputs, self._device or "cpu", dtype=self._dtype)
             outputs = self._run_generate(inputs, torch)
         except OCRTranscriptionError:
             raise
@@ -345,7 +350,7 @@ class HFGotOCRTranscriber:
                 torch.cuda.empty_cache()
             self._model.to("cpu")
             self._device = "cpu"
-            cpu_inputs = move_inputs_to_device(inputs, "cpu")
+            cpu_inputs = move_inputs_to_device(inputs, "cpu", dtype=self._dtype)
             with torch.no_grad():
                 return self._model.generate(**cpu_inputs, **kwargs)
 

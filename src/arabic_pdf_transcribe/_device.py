@@ -58,26 +58,79 @@ def resolve_device(requested: str | None) -> str:
     return "cpu"
 
 
-def move_inputs_to_device(inputs: Any, device: str) -> Any:
-    """Move processor outputs to ``device`` for both adapters.
+def move_inputs_to_device(inputs: Any, device: str, dtype: Any = None) -> Any:
+    """Move processor outputs to ``device`` (and optionally cast to ``dtype``).
 
     Real ``BatchEncoding`` objects expose ``.to(device)`` directly;
     test stubs return plain dicts (no ``.to``). Fall back to a
     per-tensor move so stubs and real outputs both work.
+
+    Issue #22 RC#1: image processors return ``pixel_values`` as fp32
+    regardless of the model's loaded dtype. Running fp32 inputs through
+    fp16/bf16 weights raises ``RuntimeError: Input type (float) and bias
+    type (c10::Half) should be the same``. When ``dtype`` is non-None
+    and differs from float32, cast the floating-point tensors (only —
+    int64 ``input_ids`` / ``attention_mask`` must stay int64) to match.
     """
-    move = getattr(inputs, "to", None)
-    if callable(move):
-        try:
-            return move(device)
-        except (TypeError, AttributeError, RuntimeError):
-            pass
     try:
         import torch
     except ImportError:  # pragma: no cover
         return inputs
+
+    needs_cast = dtype is not None and dtype is not torch.float32
+
+    move = getattr(inputs, "to", None)
+    if callable(move):
+        try:
+            moved = move(device)
+        except (TypeError, AttributeError, RuntimeError):
+            moved = None
+        if moved is not None:
+            if not needs_cast:
+                return moved
+            mapping = _as_tensor_mapping(moved)
+            if mapping is not None:
+                _cast_floating_inplace(mapping, dtype, torch)
+                return moved
+            # mapping inaccessible — fall through to dict path.
+
     if not isinstance(inputs, dict):
         return inputs
-    return {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in inputs.items()}
+    moved_dict = {
+        k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in inputs.items()
+    }
+    if needs_cast:
+        _cast_floating_inplace(moved_dict, dtype, torch)
+    return moved_dict
+
+
+def _as_tensor_mapping(inputs: Any) -> Any:
+    """Return ``inputs`` if it behaves like a mutable ``str -> Tensor`` mapping.
+
+    ``BatchEncoding`` / ``BatchFeature`` quack like dicts (``__iter__``
+    yields keys, ``__getitem__`` / ``__setitem__`` work). Plain dicts
+    qualify too. Returns ``None`` for opaque containers.
+    """
+    if isinstance(inputs, dict):
+        return inputs
+    has_get = callable(getattr(inputs, "__getitem__", None))
+    has_set = callable(getattr(inputs, "__setitem__", None))
+    has_iter = callable(getattr(inputs, "__iter__", None))
+    if has_get and has_set and has_iter:
+        return inputs
+    return None
+
+
+def _cast_floating_inplace(mapping: Any, dtype: Any, torch: Any) -> None:
+    """Cast every floating-point tensor in ``mapping`` to ``dtype``.
+
+    Skips integer tensors (token IDs, attention masks) — casting
+    ``input_ids`` to fp16 would silently corrupt vocabulary indexing.
+    """
+    for key in list(mapping):
+        value = mapping[key]
+        if isinstance(value, torch.Tensor) and torch.is_floating_point(value):
+            mapping[key] = value.to(dtype)
 
 
 def is_cuda_oom(exc: BaseException) -> bool:
