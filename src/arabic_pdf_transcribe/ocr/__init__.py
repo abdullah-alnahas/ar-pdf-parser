@@ -5,10 +5,11 @@ rasterised page (phase 4 — :mod:`arabic_pdf_transcribe.layout`),
 (2) per-region OCR (this package, phase 5).
 
 The :class:`OCRTranscriber` Protocol is the integration boundary. The
-orchestrator (phase 8) depends only on the Protocol; concrete adapters
-(currently :mod:`arabic_pdf_transcribe.ocr.hf_ocr`) implement it. This
-keeps ``transformers`` and ``torch`` out of the import graph until the
-ML branch actually runs.
+orchestrator depends only on the Protocol; concrete adapters
+(:mod:`arabic_pdf_transcribe.ocr.surya_ocr` and
+:mod:`arabic_pdf_transcribe.ocr.easy_ocr`) implement it. The adapter is
+selected at the CLI by ``--ocr`` and instantiated lazily so the heavy
+optional deps load only when the ML branch runs.
 """
 
 from __future__ import annotations

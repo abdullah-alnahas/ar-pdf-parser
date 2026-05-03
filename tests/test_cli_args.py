@@ -278,26 +278,6 @@ def test_cli_dpi_flag_wins_over_render_section(tmp_path: Path) -> None:
     assert _resolve_dpi(150, doc) == 150
 
 
-def test_config_layout_section_parsed(tmp_path: Path) -> None:
-    """``[layout]`` section feeds HFLayoutDetectorConfig.from_mapping."""
-    from arabic_pdf_transcribe.layout.hf_detector import HFLayoutDetectorConfig
-
-    cfg = HFLayoutDetectorConfig.from_mapping(
-        {"pixel_confidence": 0.7, "min_region_area_px": 128, "unknown_key": "ignored"}
-    )
-    assert cfg.pixel_confidence == 0.7
-    assert cfg.min_region_area_px == 128
-
-
-def test_config_ocr_section_parsed() -> None:
-    """``[ocr]`` section feeds OCRConfig.from_mapping."""
-    from arabic_pdf_transcribe.ocr.hf_ocr import OCRConfig
-
-    cfg = OCRConfig.from_mapping({"max_new_tokens": 2048, "num_beams": 3, "junk_key": True})
-    assert cfg.max_new_tokens == 2048
-    assert cfg.num_beams == 3
-
-
 def test_config_missing_sections_yield_defaults(tmp_path: Path) -> None:
     """Missing config file → empty doc → all defaults preserved."""
     from arabic_pdf_transcribe.cli import (
@@ -330,14 +310,16 @@ def test_prefetch_models_dispatches_helper(monkeypatch: pytest.MonkeyPatch) -> N
 
     calls: list[dict[str, object]] = []
 
-    def fake_prefetch(doc: dict[str, object]) -> int:
-        calls.append(doc)
+    def fake_prefetch(
+        doc: dict[str, object], *, layout_backend: str = "", ocr_backend: str = ""
+    ) -> int:
+        calls.append({"doc": doc, "layout": layout_backend, "ocr": ocr_backend})
         return EXIT_OK
 
     monkeypatch.setattr(cli, "_prefetch_models", fake_prefetch)
     rc = cli.main(["--prefetch-models"])
     assert rc == EXIT_OK
-    assert calls == [{}]
+    assert calls == [{"doc": {}, "layout": "full-page", "ocr": "surya"}]
 
 
 def test_prefetch_models_with_config_loads_doc(
@@ -346,17 +328,23 @@ def test_prefetch_models_with_config_loads_doc(
     import arabic_pdf_transcribe.cli as cli
 
     cfg_path = tmp_path / "c.toml"
-    cfg_path.write_text("[ocr]\nmax_new_tokens = 1024\n", encoding="utf-8")
+    cfg_path.write_text("[ocr]\nbackend = \"surya\"\n", encoding="utf-8")
     captured: dict[str, object] = {}
 
-    def fake_prefetch(doc: dict[str, object]) -> int:
+    def fake_prefetch(
+        doc: dict[str, object], *, layout_backend: str = "", ocr_backend: str = ""
+    ) -> int:
         captured.update(doc)
+        captured["__layout"] = layout_backend
+        captured["__ocr"] = ocr_backend
         return EXIT_OK
 
     monkeypatch.setattr(cli, "_prefetch_models", fake_prefetch)
     rc = cli.main(["--prefetch-models", "--config", str(cfg_path)])
     assert rc == EXIT_OK
-    assert captured.get("ocr") == {"max_new_tokens": 1024}
+    assert captured.get("ocr") == {"backend": "surya"}
+    assert captured["__layout"] == "full-page"
+    assert captured["__ocr"] == "surya"
 
 
 def test_main_without_input_or_prefetch_errors(
@@ -385,15 +373,3 @@ def test_prefetch_models_with_input_errors(
     assert "--prefetch-models" in captured.err
 
 
-def test_model_download_error_message_references_prefetch_flag() -> None:
-    """ModelDownloadError messages must point users at ``--prefetch-models``."""
-    from arabic_pdf_transcribe.errors import ModelDownloadError
-    from arabic_pdf_transcribe.layout.hf_detector import (
-        HFDiTLayoutDetector,
-        HFLayoutDetectorConfig,
-    )
-
-    detector = HFDiTLayoutDetector(HFLayoutDetectorConfig(model="does/not/exist", revision="x"))
-    with pytest.raises(ModelDownloadError) as exc_info:
-        detector.warm_up()
-    assert "--prefetch-models" in str(exc_info.value)

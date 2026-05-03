@@ -4,10 +4,11 @@ The pipeline's ML branch runs in two stages: (1) layout detection on a
 rasterised page (this package, phase 4), (2) per-region OCR (phase 5).
 
 The :class:`LayoutDetector` Protocol is the integration boundary. The
-orchestrator depends only on the Protocol; concrete adapters (currently
-:mod:`arabic_pdf_transcribe.layout.hf_detector`) implement it. This keeps
-``transformers`` and ``torch`` out of the import graph until the ML branch
-actually runs.
+orchestrator depends only on the Protocol; concrete adapters
+(:mod:`arabic_pdf_transcribe.layout.full_page` and
+:mod:`arabic_pdf_transcribe.layout.doclayout_yolo`) implement it. The
+adapter is selected at the CLI by ``--layout`` and instantiated lazily
+so the heavy optional deps load only when the ML branch runs.
 """
 
 from __future__ import annotations

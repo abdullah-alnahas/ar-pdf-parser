@@ -166,6 +166,28 @@ def build_parser() -> argparse.ArgumentParser:
             "[layout].dtype / [ocr].dtype in the config file."
         ),
     )
+    parser.add_argument(
+        "--layout",
+        choices=("full-page", "doclayout-yolo"),
+        default="full-page",
+        help=(
+            "ML layout backend: 'full-page' (default; whole page = one "
+            "region, lets the OCR backend handle layout internally) or "
+            "'doclayout-yolo' (DocLayout-YOLO regions). See the model "
+            "survey at notebooks/00_model_survey.ipynb for trade-offs."
+        ),
+    )
+    parser.add_argument(
+        "--ocr",
+        choices=("surya", "easyocr-ara"),
+        default="surya",
+        help=(
+            "OCR backend: 'surya' (default; multilingual line-level OCR, "
+            "highest quality on the test corpus) or 'easyocr-ara' "
+            "(Arabic-only, CPU-friendly, more typos). See "
+            "notebooks/00_model_survey.ipynb."
+        ),
+    )
     return parser
 
 
@@ -185,6 +207,8 @@ class ValidatedArgs:
     dpi: int
     device: str | None  # "auto" | "cuda" | "cpu" | None (use TOML / default)
     dtype: str | None  # "auto" | "float32" | "float16" | "bfloat16" | None
+    layout_backend: str  # "full-page" | "doclayout-yolo"
+    ocr_backend: str  # "surya" | "easyocr-ara"
 
 
 def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
@@ -217,6 +241,8 @@ def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
         dpi=dpi,
         device=ns.device,
         dtype=ns.dtype,
+        layout_backend=ns.layout,
+        ocr_backend=ns.ocr,
     )
 
 
@@ -320,7 +346,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if ns.prefetch_models:
         if ns.input is not None:
             parser.error("--prefetch-models does not accept an input file; pass it on its own")
-        return _prefetch_models(_load_config_doc(ns.config))
+        return _prefetch_models(
+            _load_config_doc(ns.config),
+            layout_backend=ns.layout,
+            ocr_backend=ns.ocr,
+        )
     if ns.input is None:
         parser.error("the following arguments are required: input (or pass --prefetch-models)")
     try:
@@ -344,6 +374,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         force_device=device_is_cli_override,
         dtype=dtype,
         force_dtype=dtype_is_cli_override,
+        layout_backend=args.layout_backend,
+        ocr_backend=args.ocr_backend,
     )
     dpi = _resolve_dpi(args.dpi, config_doc)
 
@@ -506,57 +538,68 @@ def _resolve_dtype(cli_dtype: str | None, doc: dict[str, object]) -> tuple[str, 
     return "auto", False
 
 
-def _prefetch_models(config_doc: dict[str, object]) -> int:
-    """Download layout + OCR weights into the HF cache and return an exit code.
+def _prefetch_models(
+    config_doc: dict[str, object],
+    *,
+    layout_backend: str = "full-page",
+    ocr_backend: str = "surya",
+) -> int:
+    """Trigger weight download for the selected layout + OCR backends.
 
-    Run before any offline use of the ML branch. Prints a one-line status
-    per model on stderr so the user sees progress; emits a clear actionable
-    error on failure pointing at the same flag.
+    The adapters' loaders own the actual download logic (HF Hub for
+    DocLayout-YOLO weights, surya / easyocr for their own caches). This
+    function just invokes one inference per adapter on a 1×1 dummy
+    image so the model files end up in the local cache.
     """
-    try:
-        from arabic_pdf_transcribe.layout.hf_detector import HFLayoutDetectorConfig
-        from arabic_pdf_transcribe.ocr.hf_ocr import OCRConfig
-    except ImportError as exc:
+    from PIL import Image
+
+    dummy = Image.new("RGB", (32, 32), color=(255, 255, 255))
+    targets: list[tuple[str, object | None]] = []
+
+    layout = _build_layout(layout_backend, device="cpu")
+    if layout is None:
         print(
-            f"error: --prefetch-models requires the [ml] extra; "
-            f"install with: pip install 'arabic-pdf-transcribe[ml]' ({exc})",
+            f"error: --prefetch-models could not construct layout backend "
+            f"{layout_backend!r}; install missing optional deps",
             file=sys.stderr,
         )
         return EXIT_MODEL_MISSING
-    try:
-        from transformers import (  # type: ignore[import-not-found]
-            AutoImageProcessor,
-            AutoModelForImageTextToText,
-            AutoModelForSemanticSegmentation,
-            AutoProcessor,
-        )
-    except ImportError as exc:
+    targets.append(("layout", layout))
+
+    ocr = _build_ocr(ocr_backend, device="cpu")
+    if ocr is None:
         print(
-            f"error: transformers is required for --prefetch-models; "
-            f"install the [ml] extra: pip install 'arabic-pdf-transcribe[ml]'. ({exc})",
+            f"error: --prefetch-models could not construct OCR backend "
+            f"{ocr_backend!r}; install missing optional deps",
             file=sys.stderr,
         )
         return EXIT_MODEL_MISSING
-    layout_cfg = HFLayoutDetectorConfig.from_mapping(config_doc.get("layout"))
-    ocr_cfg = OCRConfig.from_mapping(config_doc.get("ocr"))
-    targets = (
-        (
-            "layout",
-            layout_cfg.model,
-            layout_cfg.revision,
-            AutoImageProcessor,
-            AutoModelForSemanticSegmentation,
-        ),
-        ("ocr", ocr_cfg.model, ocr_cfg.revision, AutoProcessor, AutoModelForImageTextToText),
-    )
-    for label, model_id, revision, processor_cls, model_cls in targets:
-        print(f"prefetching {label} model {model_id}@{revision[:12]}", file=sys.stderr)
+    targets.append(("ocr", ocr))
+
+    for label, adapter in targets:
+        print(f"prefetching {label} backend ({type(adapter).__name__})", file=sys.stderr)
         try:
-            processor_cls.from_pretrained(model_id, revision=revision)
-            model_cls.from_pretrained(model_id, revision=revision)
+            if label == "layout":
+                adapter.detect(dummy, page_index=0)  # type: ignore[attr-defined]
+            else:
+                from arabic_pdf_transcribe.regions import (
+                    BBox,
+                    Region,
+                    RegionRole,
+                    RegionSource,
+                )
+
+                region = Region(
+                    page_index=0,
+                    bbox=BBox(0.0, 0.0, 32.0, 32.0),
+                    text="",
+                    role=RegionRole.PARAGRAPH,
+                    source=RegionSource.OCR,
+                )
+                adapter.transcribe(region, dummy)  # type: ignore[attr-defined]
         except Exception as exc:
             print(
-                f"error: failed to prefetch {label} model {model_id}@{revision[:12]}: {exc}",
+                f"error: failed to prefetch {label} backend ({type(adapter).__name__}): {exc}",
                 file=sys.stderr,
             )
             return EXIT_MODEL_MISSING
@@ -571,63 +614,53 @@ def _maybe_build_ml_adapters(
     force_device: bool = False,
     dtype: str | None = None,
     force_dtype: bool = False,
+    layout_backend: str = "full-page",
+    ocr_backend: str = "surya",
 ) -> tuple[object | None, object | None]:
     """Return ``(layout_detector, ocr_transcriber)`` or ``(None, None)``.
 
-    The CLI wires the ML adapters when their imports succeed. The
-    optional TOML config doc supplies overrides via the ``[layout]``
-    and ``[ocr]`` sections (model id, revision, decoding params,
-    pixel-confidence threshold). The adapters load their model
-    lazily on the first call. When the optional ``[ml]`` extra is
-    not installed, the CLI proceeds without ML support — pages that
-    need the ML branch surface :class:`RuntimeError` from the
-    orchestrator, mapped to a per-page failure (or strict abort).
+    The backends are chosen by the CLI flags ``--layout`` and ``--ocr``.
+    Adapters load their underlying models lazily on the first call.
+    When a backend's optional dependencies are not installed,
+    construction fails with a :class:`ModelDownloadError` at first use,
+    which the orchestrator maps to a per-page failure (or strict abort).
     """
-    try:
-        from arabic_pdf_transcribe.layout.hf_detector import (
-            HFDiTLayoutDetector,
-            HFLayoutDetectorConfig,
-        )
-        from arabic_pdf_transcribe.ocr.hf_ocr import HFQwen2VLOCRTranscriber, OCRConfig
-    except ImportError:
-        return None, None
-    layout_cfg = HFLayoutDetectorConfig.from_mapping((doc or {}).get("layout"))
-    ocr_cfg = OCRConfig.from_mapping((doc or {}).get("ocr"))
-    if device is not None:
-        from dataclasses import replace
+    resolved_device = device or "auto"
+    layout_detector = _build_layout(layout_backend, device=resolved_device)
+    ocr_transcriber = _build_ocr(ocr_backend, device=resolved_device)
+    return layout_detector, ocr_transcriber
 
-        # ``force_device=True`` means the user passed ``--device`` on
-        # the CLI; that's the documented escape hatch and MUST override
-        # per-section ``[layout].device`` / ``[ocr].device`` (otherwise
-        # ``--device cpu`` could not rescue a config that pinned CUDA).
-        # When the value came from ``[runtime].device`` instead, the
-        # per-section override is the more specific config and wins.
-        layout_section = (doc or {}).get("layout")
-        layout_has_device = isinstance(layout_section, dict) and "device" in layout_section
-        if force_device or not layout_has_device:
-            layout_cfg = replace(layout_cfg, device=device)
-        ocr_section = (doc or {}).get("ocr")
-        ocr_has_device = isinstance(ocr_section, dict) and "device" in ocr_section
-        if force_device or not ocr_has_device:
-            ocr_cfg = replace(ocr_cfg, device=device)
-    if dtype is not None:
-        from dataclasses import replace
 
-        # Same precedence as ``device``: ``--dtype`` (force_dtype=True)
-        # overrides per-section ``[layout].dtype`` / ``[ocr].dtype``;
-        # otherwise the more specific per-section value wins.
-        layout_section = (doc or {}).get("layout")
-        layout_has_dtype = isinstance(layout_section, dict) and "dtype" in layout_section
-        if force_dtype or not layout_has_dtype:
-            layout_cfg = replace(layout_cfg, dtype=dtype)
-        ocr_section = (doc or {}).get("ocr")
-        ocr_has_dtype = isinstance(ocr_section, dict) and "dtype" in ocr_section
-        if force_dtype or not ocr_has_dtype:
-            ocr_cfg = replace(ocr_cfg, dtype=dtype)
-    try:
-        return HFDiTLayoutDetector(layout_cfg), HFQwen2VLOCRTranscriber(ocr_cfg)
-    except Exception:  # pragma: no cover — defensive; constructors are cheap
-        return None, None
+def _build_layout(name: str, *, device: str) -> object | None:
+    if name == "full-page":
+        from arabic_pdf_transcribe.layout.full_page import FullPageLayoutDetector
+
+        return FullPageLayoutDetector()
+    if name == "doclayout-yolo":
+        try:
+            from arabic_pdf_transcribe.layout.doclayout_yolo import (
+                DocLayoutYoloDetector,
+            )
+        except ImportError:
+            return None
+        return DocLayoutYoloDetector(device=device)
+    raise ValueError(f"unknown layout backend: {name!r}")
+
+
+def _build_ocr(name: str, *, device: str) -> object | None:
+    if name == "surya":
+        try:
+            from arabic_pdf_transcribe.ocr.surya_ocr import SuryaOCRTranscriber
+        except ImportError:
+            return None
+        return SuryaOCRTranscriber()
+    if name == "easyocr-ara":
+        try:
+            from arabic_pdf_transcribe.ocr.easy_ocr import EasyOCRTranscriber
+        except ImportError:
+            return None
+        return EasyOCRTranscriber(device=device)
+    raise ValueError(f"unknown OCR backend: {name!r}")
 
 
 # ---------------------------------------------------------------------------

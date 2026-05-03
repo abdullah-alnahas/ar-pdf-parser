@@ -421,10 +421,14 @@ def _run_ml_branch(
             transcribed.append(region)
             continue
         transcribed.append(ocr_transcriber.transcribe(region, page_image))
+    # ML-branch bboxes are in pixel coords on the rasterised image, so the
+    # page dimensions handed to the post-processor must match (otherwise
+    # full-page regions land in the header/footer band by mistake).
+    pixel_width, pixel_height = page_image.size
     return _post_process_regions(
         transcribed,
-        page_width=native_page.page_width,
-        page_height=native_page.page_height,
+        page_width=float(pixel_width),
+        page_height=float(pixel_height),
         reorder_call=reorder_call,
         classify_cfg=classify_cfg,
         rtl=rtl,
