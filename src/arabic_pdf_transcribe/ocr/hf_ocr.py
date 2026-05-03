@@ -111,6 +111,12 @@ DEFAULT_NO_REPEAT_NGRAM_SIZE = 3
 DEFAULT_REPETITION_PENALTY = 1.05
 DEFAULT_DEVICE = "auto"
 DEFAULT_DTYPE = "auto"
+# Issue #24: GOT-OCR-2.0 uses a chat-template ending with this special
+# token; without forwarding it as ``stop_strings`` (and ``tokenizer=``
+# so generate can detect it in the decoded output) the model never
+# stops at the natural end of OCR text and emits sampled noise until
+# ``max_new_tokens`` runs out.
+OCR_STOP_STRING = "<|im_end|>"
 
 
 @dataclass(frozen=True)
@@ -355,8 +361,17 @@ class HFGotOCRTranscriber:
                 return self._model.generate(**cpu_inputs, **kwargs)
 
     def _generate_kwargs(self) -> dict[str, Any]:
-        """Decoding kwargs forwarded to ``model.generate`` (DRY across retries)."""
-        return {
+        """Decoding kwargs forwarded to ``model.generate`` (DRY across retries).
+
+        Issue #24: GOT-OCR-2.0's chat-template generation never emits
+        a built-in EOS at the natural end of OCR output; the upstream
+        recipe relies on ``stop_strings="<|im_end|>"`` (paired with
+        ``tokenizer=`` so generate can decode the running output to
+        match the stop string) to terminate cleanly. Without this
+        pair, generation runs to ``max_new_tokens`` and the trailing
+        tokens are sampled noise — math symbols, CJK, control bytes.
+        """
+        kwargs: dict[str, Any] = {
             "max_new_tokens": self.config.max_new_tokens,
             "num_beams": self.config.num_beams,
             "do_sample": self.config.do_sample,
@@ -366,6 +381,11 @@ class HFGotOCRTranscriber:
             "return_dict_in_generate": True,
             "output_scores": True,
         }
+        tokenizer = getattr(self._processor, "tokenizer", None)
+        if tokenizer is not None:
+            kwargs["tokenizer"] = tokenizer
+            kwargs["stop_strings"] = OCR_STOP_STRING
+        return kwargs
 
 
 def _confidence_from_scores(outputs: Any, gen_tokens: Any) -> float | None:
@@ -373,7 +393,10 @@ def _confidence_from_scores(outputs: Any, gen_tokens: Any) -> float | None:
 
     Returns ``None`` when the model did not expose per-token scores
     (e.g. wrapped models that override ``generate`` and drop
-    ``output_scores``).
+    ``output_scores``) or when the score tensors cannot be aligned
+    with ``gen_tokens`` (issue #24: ``stop_strings`` truncates the
+    output mid-step, which on some transformers versions misaligns
+    the scores tuple — degrade to ``None`` rather than raising).
     """
     try:
         import torch
@@ -382,18 +405,22 @@ def _confidence_from_scores(outputs: Any, gen_tokens: Any) -> float | None:
     scores = getattr(outputs, "scores", None)
     if scores is None or len(scores) == 0:
         return None
-    log_prob_sum = 0.0
-    counted = 0
-    # ``scores`` is a tuple of length-``num_new_tokens`` tensors,
-    # each shape ``(batch, vocab)``. ``gen_tokens`` is the chosen
-    # token ids, length ``num_new_tokens``.
-    for step_idx, step_scores in enumerate(scores):
-        if step_idx >= len(gen_tokens):
-            break
-        tok_id = int(gen_tokens[step_idx])
-        log_probs = torch.log_softmax(step_scores[0], dim=-1)
-        log_prob_sum += float(log_probs[tok_id])
-        counted += 1
+    try:
+        log_prob_sum = 0.0
+        counted = 0
+        # ``scores`` is a tuple of length-``num_new_tokens`` tensors,
+        # each shape ``(batch, vocab)``. ``gen_tokens`` is the chosen
+        # token ids, length ``num_new_tokens``.
+        for step_idx, step_scores in enumerate(scores):
+            if step_idx >= len(gen_tokens):
+                break
+            tok_id = int(gen_tokens[step_idx])
+            log_probs = torch.log_softmax(step_scores[0], dim=-1)
+            log_prob_sum += float(log_probs[tok_id])
+            counted += 1
+    except Exception as exc:
+        LOGGER.debug("OCR: confidence aggregation skipped (%s)", exc)
+        return None
     if counted == 0:
         return None
     return math.exp(log_prob_sum / counted)
