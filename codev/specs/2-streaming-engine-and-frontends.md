@@ -60,7 +60,7 @@ A user running the project locally can:
 6. **Fail before waiting.** Errors are detected in two tiers, both before any page is rasterized. **Tier 1 (input validation, ≤ 1 second after submit)**: unreadable PDF path, unwritable job directory, invalid page selection, unsupported backend combination, malformed request body. **Tier 2 (backend warm-up, completes before the first page event)**: missing GPU when the chosen backend requires one, missing model weights with no network, lazy-loaded model import failure. Tier 1 always runs synchronously inside the request handler so the client sees the error in the API response. Tier 2 may take several seconds if a model has to load; it runs before the engine starts page work and reports its outcome via the same events stream as page progress, so the UI can show "loading models…" honestly rather than appearing to hang.
 7. **Reuse loaded models (service mode only).** Inside the long-running service process, repeated jobs against the same backend selection do not pay model-load cost a second time, and switching backends pays the cost of the new backend only. The CLI does not benefit from this — every CLI invocation is a fresh Python process and reloads its adapters; that is unchanged from today and out of scope here.
 8. **Get a faster transcription.** With unchanged hardware and the same backend selection, end-to-end runtime on a representative document is at least 30 percent shorter than today's baseline, with a stretch target of 50 percent or better. To make this target reachable without a gamble, this spec commits to **at least one structural speedup lever shipping in this work**: page-render and OCR overlap via a bounded async queue, so that page N + 1 is being rasterized while page N is in OCR. Additional candidate levers — batched OCR inference within a single Surya call, reduced-precision (fp16 / bf16) inference on capable hardware — are scoped and ordered in the implementation plan; the plan may add or defer them, but the overlap lever is non-optional.
-9. **Export to Word (.docx) with page boundaries preserved.** Once a job reaches `completed`, the user can download a Word document of the transcription. The docx mirrors the source PDF page-by-page: every PDF page becomes its own Word page (a hard page break is inserted between every pair of consecutive transcribed pages), and the text of one PDF page never appears on a different page of the docx. Heading levels, paragraphs, and list items present in the per-page Markdown are mapped to corresponding Word styles; figures and tables transcribed today carry over with their existing structure (figures as image placeholders, tables as Word tables). Right-to-left paragraph direction is set on every paragraph to render Arabic correctly. The docx is built from the same per-page Markdown the Markdown export uses, with no re-OCR. Markdown export remains the default; docx is offered alongside it as an additional download in both web and CLI surfaces.
+9. **Export to Word (.docx) with page boundaries preserved.** Once a job reaches `completed`, the user can download a Word document of the transcription. The docx mirrors the source PDF page-by-page: every PDF page becomes its own Word page (a hard page break is inserted between every pair of consecutive transcribed pages), and the text of one PDF page never appears on a different page of the docx. Heading levels, paragraphs, and list items present in the per-page Markdown are mapped to corresponding Word styles; tables carry over as Word tables. Figures use a **literal text placeholder** of the form `[Figure: page N, region M]` rather than an inserted image, because the figure region's pixels are already on disk as part of the page raster — embedding the cropped sub-image is a follow-up improvement, not a Phase-1 requirement; using a text placeholder keeps the page-break invariant easy to verify. Right-to-left paragraph direction is set on every paragraph to render Arabic correctly. The docx is built from the same per-page Markdown the Markdown export uses, with no re-OCR. Cancelled jobs do not produce a docx — a docx with arbitrary missing pages would be misleading; users who cancel and "Keep" can still review the per-page Markdown files. Markdown export remains the default; docx is offered alongside it as an additional download in both web and CLI surfaces.
 
 The Markdown produced for any given input remains semantically equivalent to today's CLI output; the speedups and the streaming UI must not change the final transcription.
 
@@ -74,7 +74,7 @@ The Markdown produced for any given input remains semantically equivalent to tod
 
 - [ ] A single project install exposes three entrypoints — CLI, local web service, Electron shell — that share the same Python engine code path.
 - [ ] On a representative multi-page Arabic PDF, the web UI shows the first transcribed page within five seconds of submission on a warm process (models already loaded), and additional pages stream in as they finish.
-- [ ] The Markdown produced by the new streaming pipeline is **equivalent** to today's CLI output for the same backends and inputs, where equivalent is defined as: after applying the canonical normalization (NFC Unicode normalization, trailing whitespace stripped per line, runs of two or more blank lines collapsed to one, terminal newline enforced), the streaming and CLI outputs are byte-identical. The test runs on a checked-in fixture document and is gated in CI.
+- [ ] The Markdown produced by the new streaming pipeline is **equivalent** to today's CLI output for the same backends and inputs, where equivalent is defined as: after applying the canonical normalization (line endings normalized to `\n`, NFC Unicode normalization, trailing whitespace stripped per line, runs of two or more blank lines collapsed to one, terminal newline enforced), the streaming and CLI outputs are byte-identical. The test runs on a checked-in fixture document and is gated in CI.
 - [ ] **End-to-end runtime benchmark.** On a checked-in **reference fixture** — defined as a multi-page Arabic PDF with a documented, fixed page count and layout mix (body-text, headings, footnoted passages) committed alongside the test, executed on a documented hardware baseline (current local development machine class) with default backends, warm process, GPU available — the new pipeline is at least 30 percent shorter wall-clock than today's CLI on the same input. The fixture's exact identity, page count, and the measurement harness are pinned by the implementation plan and committed to the repository before the benchmark gate is declared green.
 - [ ] **Service-mode** model reuse: inside the long-running service process, a second job against the same backends as the previous job starts processing pages without paying model-load cost.
 - [ ] Every input failure mode (missing PDF, unwritable target, invalid page range, missing GPU when required, missing model weights, incompatible backend pair) is detected and reported with an actionable error before any page is rasterized or OCR runs.
@@ -157,8 +157,10 @@ A job moves through these states inside the service process. State transitions a
            ▼
         accepted ─── tier-1 input check fails ──▶ failed (terminal)
            │
+           ▼
         warming ─── tier-2 backend check fails ──▶ failed (terminal)
-           │
+           │       └── (cancel) ───────────────▶ cancelled (terminal)
+           ▼
         running ─────── all pages emitted ──▶ finalizing ──▶ completed (terminal)
            │
        (cancel)
@@ -169,19 +171,24 @@ A job moves through these states inside the service process. State transitions a
                                                   (resume)
                                                      │
                                                      ▼
-                                                  running
+                                                  warming (re-check, then running)
 ```
 
 State definitions:
 
 - **accepted** — the request is parsed, tier-1 input checks pass, the job directory is created, the job_id is returned to the client. No engine work yet.
-- **warming** — the engine resolves backends and ensures the model adapters are loaded (warm hit, or load if cold). Tier-2 errors surface here.
+- **warming** — the engine resolves backends and ensures the model adapters are loaded (warm hit, or load if cold). Tier-2 errors surface here. **Cancel is honored during warming**: the in-flight model load is allowed to finish (or aborted at the next safe point if the underlying loader supports interruption), no pages are started, and the state transitions directly to **cancelled**. This protects the user from a 10–30 second cold-load with no escape.
 - **running** — pages are being processed. Each page that finishes appends a `page_started` and a `page_done` event and writes its PNG and Markdown.
 - **stopping** — the user cancelled. The currently in-flight page is allowed to commit; no further pages are scheduled. The state transitions to **cancelled** as soon as the in-flight page is on disk.
-- **cancelled** — terminal. The Resume action transitions back to **running** with the pending-page set recomputed from `manifest.completed_pages` and the original `page_selection`.
-- **finalizing** — every page in `page_selection` has a `page_done`; the engine concatenates `pages/*.md` into `result.md` and emits the `pipeline_done` event.
-- **completed** — terminal. The Resume button is hidden in the UI. `manifest.json.status = "completed"`.
+- **cancelled** — terminal. The Resume action transitions to **warming** (which re-checks backends and falls through to **running** once warm), with the pending-page set recomputed from `manifest.completed_pages` and the original `page_selection`.
+- **finalizing** — every page in `page_selection` has a `page_done`; the engine concatenates `pages/*.md` into `result.md` and emits the `pipeline_done` event. Cancel during finalizing is **not honored** — finalization is a sub-second operation that runs to completion; the state proceeds to **completed**.
+- **completed** — terminal. The Resume button is hidden in the UI. `manifest.json.status = "completed"`. The Markdown and docx outputs are available; cancelled jobs that were "kept" never reach this state, so a partial docx is not produced (this is intentional — a docx with arbitrary missing pages would be misleading; the per-page Markdown files remain available for review).
 - **failed** — terminal. `manifest.json.status = "failed"` with a `reason` field. No Resume.
+
+Page index convention (single source of truth):
+
+- Page indices in **events** (`page_started.page_index`, `page_done.page_index`, `page_failed.page_index`), in **API URLs** (`/jobs/{id}/pages/{n}/…`), and in **`manifest.completed_pages`** are all **1-based** — matching the user-visible CLI `--pages 1-3,7` syntax. Filenames inside `pages/` are also 1-based and zero-padded to four digits (`0001.png`).
+- The engine internally uses 0-based indices today; conversion happens at the API/CLI boundary, not inside event payloads.
 
 Resume invariants (in-process only):
 
@@ -189,6 +196,12 @@ Resume invariants (in-process only):
 - Resume re-enters at the first page of `page_selection` not in `manifest.completed_pages`, in order, until done.
 - Resume does not re-rasterize or re-OCR completed pages.
 - Resume is hidden from the UI in any state other than **cancelled**.
+
+Invalid-state requests:
+
+- A `POST /jobs/{id}/cancel {action: "stop"}` while the job is in **stopping** or any terminal state returns `200 OK` (idempotent — the stop has already happened or is in progress).
+- A `POST /jobs/{id}/cancel {action: "resume"}` while the job is in any state other than **cancelled** returns `409 Conflict`.
+- A `POST /jobs/{id}/cancel {action: "delete"}` is accepted from any state and is idempotent: the job directory is removed, the in-memory job entry is forgotten, subsequent requests against the job return `404`.
 
 ## API and Event Contract (Skeletal)
 
@@ -204,7 +217,7 @@ The plan is free to add fields, query params, and side endpoints, but the routes
 | `GET` | `/jobs/{job_id}/pages/{n}/image` | Rendered PNG for page `n` (1-based). 404 until the page's `page_done` event has been emitted. |
 | `GET` | `/jobs/{job_id}/pages/{n}/markdown` | Per-page Markdown for page `n`. Same 404 rule. |
 | `GET` | `/jobs/{job_id}/result.md` | Final concatenated Markdown. 404 until `pipeline_done`. |
-| `GET` | `/jobs/{job_id}/result.docx` | Final Word document with hard page breaks between source-PDF pages and RTL paragraph direction on every paragraph. 404 until `pipeline_done`. Built lazily on first request and cached in the job directory thereafter. |
+| `GET` | `/jobs/{job_id}/result.docx` | Final Word document with hard page breaks between source-PDF pages and RTL paragraph direction on every paragraph. 404 until `pipeline_done`. Built lazily on first request and cached in the job directory thereafter. If docx generation fails (malformed Markdown construct the generator cannot represent, disk-full at write, etc.), the endpoint returns `500` with `{error_code, message}` and **does not cache the failure**, so a retry can succeed once the underlying issue is fixed. The job's `pipeline_done` event is unaffected by docx-generation failures — Markdown remains the canonical output. |
 | `POST` | `/jobs/{job_id}/cancel` | Request cancellation. The body carries `{action: "stop" | "resume" | "delete"}`. The default action on first invocation is `"stop"`; subsequent invocations carry `"resume"` or `"delete"`. |
 | `DELETE` | `/jobs/{job_id}` | Equivalent to `POST .../cancel` with `action: "delete"` plus removal of the job directory. Idempotent. |
 | `GET` | `/healthz` | Service health and engine readiness; used by the Electron shell's readiness handshake. |
@@ -216,13 +229,13 @@ Every SSE message has an `id` (monotonic per job, persisted in `events.jsonl`) a
 | Event type | Required fields | When emitted |
 |-----------|-----------------|--------------|
 | `job_accepted` | `job_id`, `total_pages`, `page_selection` | First event after `POST /jobs`. |
-| `warming` | `backend_layout`, `backend_ocr`, `phase ∈ {"loading", "ready"}` | At entry to and exit from the **warming** state. The `loading` event is what the UI shows as "loading models…". |
-| `page_started` | `page_index`, `total_pages` | Just before page `n` enters layout detection. |
-| `page_done` | `page_index`, `total_pages`, `image_url`, `markdown_url`, `duration_seconds` | After PNG and Markdown for page `n` are on disk. `image_url` and `markdown_url` are server-relative paths the SPA can fetch directly (`pages/0007/image`, `pages/0007/markdown`). |
-| `page_failed` | `page_index`, `total_pages`, `error_code`, `message` | When a single page fails (only emitted if the engine continues; with `--strict` the engine emits `pipeline_failed` instead). |
-| `state_change` | `from`, `to` | On every state-machine transition listed in the Job Lifecycle section. |
-| `pipeline_done` | `total_pages`, `result_url` | Job reached **completed**. `result_url` is the server-relative path to `result.md`. |
-| `pipeline_failed` | `error_code`, `message`, `phase` | Terminal failure. The `phase` distinguishes tier-1, tier-2, and per-page failures from a hard pipeline abort. |
+| `warming` | `job_id`, `backend_layout`, `backend_ocr`, `phase ∈ {"loading", "ready"}` | At entry to and exit from the **warming** state. The `loading` event is what the UI shows as "loading models…". |
+| `page_started` | `job_id`, `page_index`, `total_pages` | Just before page `n` enters layout detection. |
+| `page_done` | `job_id`, `page_index`, `total_pages`, `image_url`, `markdown_url`, `duration_seconds` | After PNG and Markdown for page `n` are on disk. `image_url` and `markdown_url` are absolute server paths the SPA can fetch directly (`/jobs/{job_id}/pages/0007/image`, `/jobs/{job_id}/pages/0007/markdown`). |
+| `page_failed` | `job_id`, `page_index`, `total_pages`, `error_code`, `message` | When a single page fails (only emitted if the engine continues; with `--strict` the engine emits `pipeline_failed` instead). |
+| `state_change` | `job_id`, `from`, `to` | On every state-machine transition listed in the Job Lifecycle section. |
+| `pipeline_done` | `job_id`, `total_pages`, `result_url`, `docx_url` | Job reached **completed**. URLs are absolute server paths (`/jobs/{job_id}/result.md`, `/jobs/{job_id}/result.docx`). |
+| `pipeline_failed` | `job_id`, `error_code`, `message`, `phase` | Terminal failure. The `phase` distinguishes tier-1, tier-2, and per-page failures from a hard pipeline abort. `job_id` is included so reconnecting clients can disambiguate streams. |
 
 The SPA constructs page asset URLs only by following the `image_url` / `markdown_url` strings emitted by `page_done` events; it does not synthesize them from the `page_index`. This keeps the URL scheme an implementation detail of the service.
 
@@ -295,9 +308,9 @@ Approach 1. It is the only approach that delivers the three-frontend goal with o
 - [ ] Docx generation library: `python-docx` is the obvious default, but the plan may pick another if there is a concrete reason; the choice does not change the API or the success criterion.
 
 ### Nice-to-Know (Optimization)
-- [ ] Should the service expose a `/cancel` endpoint, or is cancellation triggered only via the UI? (Either is fine; the plan picks.)
 - [ ] Should ETA smoothing be moving-average, median over a window, or something else? (The plan picks.)
 - [ ] When the user runs the documented `clean` command, what is the cutoff (delete only fully completed jobs older than N days, or wipe everything)? Per-job retention is mandated by the Technical Constraints; this question is purely about the cleanup ergonomics.
+- [ ] Should the API split `POST /jobs/{id}/cancel {action: "resume"}` into a dedicated `POST /jobs/{id}/resume` endpoint for REST clarity? Both work; the spec uses the unified endpoint to minimize surface area, but the plan may add the dedicated route as syntactic sugar.
 
 ## Performance Requirements
 
@@ -404,7 +417,20 @@ Approach 1. It is the only approach that delivers the three-frontend goal with o
 **Fourth, user-driven addition — docx export**:
 - The repository owner added a hard requirement that the system export to `.docx` with **page boundaries preserved** (every PDF page becomes its own Word page; no text from one source page appears on a different docx page). Desired State gained a new item 9; Success Criteria, the API contract (`GET /jobs/{job_id}/result.docx`), the Job Directory layout (`result.docx`), Test Scenarios, Dependencies, and Risks were all updated to cover docx with hard page breaks, RTL paragraph direction, and a structural test that inspects the docx XML.
 
-**Note on consultation coverage**: SPIR's default policy is two consultants. Across the four passes documented above, four distinct external reviewers contributed: Claude Opus, Gemini 3 Flash Preview, ChatGPT (user-run), and Qwen (user-run). Codex (GPT-5.4) was unavailable through this checkpoint due to a usage limit lasting until 2026-05-08; that gap was more than filled by the user-driven third-pass reviewers. The user is aware of and accepted this substitution.
+**Fifth pass — Second multi-agent pass after the docx and contract updates, 2026-05-03 (Gemini 3 Flash Preview + Claude Opus, run in parallel)**:
+
+- Gemini's verdict: APPROVE. Findings: cancel-during-warming behavior unspecified; docx figure placeholder ambiguity; `pipeline_failed` should include `job_id`.
+- Claude's verdict: REQUEST_CHANGES. Findings: state machine has no cancel from warming (a 10–30s cold-load with no escape contradicts the "never appears to hang" goal); `page_index` 0-based vs 1-based convention never declared; docx generation failure mode undocumented; stale Open Question about `/cancel` endpoint that already exists in the API; invalid-state cancel/resume responses unspecified; line-ending normalization missing; partial-docx-for-cancelled-jobs intent should be confirmed.
+
+**Sections updated** in response to this pass:
+
+- **Job Lifecycle and State Machine**: added a `warming → cancelled` transition (cancel honored during cold load); added an explicit "cancel during finalizing is not honored — it is a sub-second operation that runs to completion"; added an explicit no-partial-docx rule to the **completed** definition; added a Resume-target clarification (Resume re-enters at **warming** to re-check backends, then falls through to **running**); added a **Page index convention** sub-section pinning that all event payloads, API URLs, and `manifest.completed_pages` are 1-based (matching the user-facing CLI); added an **Invalid-state requests** sub-section documenting `200`/`409`/idempotency for cancel/resume in unexpected states.
+- **API and Event Contract**: every SSE event now carries `job_id` explicitly; `page_done` URL examples are now absolute (`/jobs/{job_id}/pages/0007/image`) instead of bare relative paths; `pipeline_done` now carries `docx_url` alongside `result_url`; `GET /result.docx` documents the failure-mode contract (500, do not cache failure, Markdown remains canonical).
+- **Desired State item 9**: docx figure handling is now an explicit **literal text placeholder** (`[Figure: page N, region M]`), not an embedded image; cancelled-job no-docx behavior is explicit.
+- **Success Criteria — output equivalence**: line endings normalized to `\n` added to the canonical normalization rule.
+- **Open Questions**: removed the stale "Should the service expose a `/cancel` endpoint" item (the API section already defines one); added a question on whether `resume` should be split into a dedicated endpoint for REST clarity.
+
+**Note on consultation coverage**: SPIR's default policy is two consultants. Across the five passes documented above, the spec received review from five distinct external reviewers: Claude Opus (twice), Gemini 3 Flash Preview (twice), ChatGPT (user-run), Qwen (user-run). Codex (GPT-5.4) was unavailable through this checkpoint due to a usage limit lasting until 2026-05-08. The two-consultant minimum is met multiple times over and the user accepted this coverage.
 
 ## Approval
 - [ ] Technical Lead Review
