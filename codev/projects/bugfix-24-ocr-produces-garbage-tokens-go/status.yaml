@@ -1,0 +1,12 @@
+id: bugfix-24
+title: ocr-produces-garbage-tokens-go
+protocol: bugfix
+phase: pr
+plan_phases: []
+current_plan_phase: null
+gates: {}
+iteration: 1
+build_complete: false
+history: []
+started_at: '2026-05-03T02:15:36.178Z'
+updated_at: '2026-05-03T02:23:55.478Z'
