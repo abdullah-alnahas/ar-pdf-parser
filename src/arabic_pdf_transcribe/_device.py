@@ -19,6 +19,7 @@ from typing import Any
 LOGGER = logging.getLogger(__name__)
 
 _VALID = frozenset({"auto", "cuda", "cpu"})
+_VALID_DTYPES = frozenset({"auto", "float32", "float16", "bfloat16"})
 # torch nn.Module's inference-mode switch (NOT Python's evaluate-string
 # function); spelled via concatenation so source-scanning tools can
 # distinguish the two.
@@ -93,6 +94,42 @@ def is_cuda_oom(exc: BaseException) -> bool:
     return "out of memory" in msg and "cuda" in msg
 
 
+def resolve_dtype(requested: str | None, device: str) -> Any:
+    """Return a torch dtype for ``from_pretrained``'s ``torch_dtype`` kwarg.
+
+    Issue #20 RC#1: fp32 is the default for both layout and OCR models, which
+    doubles VRAM use vs fp16/bf16. ``auto`` picks bf16 on Ampere+ CUDA
+    (compute capability >= 8) where bf16 is hardware-accelerated, fp16 on
+    older CUDA, and fp32 on CPU (where reduced precision is rarely a win).
+
+    Returns ``None`` when torch is unavailable; callers should then omit the
+    ``torch_dtype`` kwarg entirely. Unknown values raise ``ValueError`` so
+    typos surface early.
+    """
+    value = (requested or "auto").lower()
+    if value not in _VALID_DTYPES:
+        raise ValueError(
+            f"unsupported dtype {requested!r}; expected one of {sorted(_VALID_DTYPES)}"
+        )
+    try:
+        import torch
+    except ImportError:
+        return None
+    if value == "float32":
+        return torch.float32
+    if value == "float16":
+        return torch.float16
+    if value == "bfloat16":
+        return torch.bfloat16
+    if device != "cuda":
+        return torch.float32
+    try:
+        major, _ = torch.cuda.get_device_capability()
+    except Exception:  # pragma: no cover — defensive
+        return torch.float16
+    return torch.bfloat16 if major >= 8 else torch.float16
+
+
 def place_model(model: Any, device: str) -> None:
     """Move ``model`` onto ``device`` and switch to inference mode.
 
@@ -123,4 +160,5 @@ __all__ = [
     "move_inputs_to_device",
     "place_model",
     "resolve_device",
+    "resolve_dtype",
 ]

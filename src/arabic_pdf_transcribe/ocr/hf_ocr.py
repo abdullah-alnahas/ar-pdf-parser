@@ -78,6 +78,7 @@ from arabic_pdf_transcribe._device import (
     move_inputs_to_device,
     place_model,
     resolve_device,
+    resolve_dtype,
 )
 from arabic_pdf_transcribe.errors import ModelDownloadError, OCRTranscriptionError
 from arabic_pdf_transcribe.ocr._crop import DEFAULT_PADDING_PX, crop_region
@@ -96,19 +97,20 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "stepfun-ai/GOT-OCR-2.0-hf"
 DEFAULT_REVISION = "d3017ef2c2c1395888c8d635c5e0508bcb0ac78d"
-# Issue #18 RC#3: 4096 was a safety net against unterminated
-# generation, but with no repetition controls a stuck Qwen2 head can
-# burn through 4 K tokens per region on CPU (30+ min/region). A 1 K
-# bound is still > 3x a typical Arabic paragraph's tokenisation and
-# makes runaway generation visible in single-digit minutes rather
-# than half-hours.
-DEFAULT_MAX_NEW_TOKENS = 1024
+# Issue #18 RC#3 lowered the cap from 4096 → 1024. Issue #20 RC#4
+# lowers it again 1024 → 512: with KV cache scaling linearly in
+# seq_len (and SDPA attention quadratically), the 1024 ceiling
+# inflated per-region peak VRAM unnecessarily on 6 GB cards. 512
+# tokens is still ~5x the 99th-percentile paragraph length; users
+# with very long regions can override via [ocr].max_new_tokens.
+DEFAULT_MAX_NEW_TOKENS = 512
 DEFAULT_NUM_BEAMS = 1
 # Belt-and-suspenders against repetition loops on adversarial crops
 # (the failure mode 4096 was originally papering over).
 DEFAULT_NO_REPEAT_NGRAM_SIZE = 3
 DEFAULT_REPETITION_PENALTY = 1.05
 DEFAULT_DEVICE = "auto"
+DEFAULT_DTYPE = "auto"
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,7 @@ class OCRConfig:
     no_repeat_ngram_size: int = DEFAULT_NO_REPEAT_NGRAM_SIZE
     repetition_penalty: float = DEFAULT_REPETITION_PENALTY
     device: str = DEFAULT_DEVICE
+    dtype: str = DEFAULT_DTYPE
 
     @classmethod
     def from_mapping(cls, mapping: object) -> OCRConfig:
@@ -156,6 +159,11 @@ class HFGotOCRTranscriber:
         self._model: Any = None
         self._processor: Any = None
         self._device: str | None = None
+        # Issue #20 RC#3: a CUDA OOM gets one in-place retry on GPU
+        # (after empty_cache) before we permanently fall back to CPU.
+        # The flag stays set across regions so a subsequent OOM falls
+        # back immediately rather than thrashing.
+        self._oom_retry_used: bool = False
 
     def warm_up(self) -> None:
         """Force model + processor load now (otherwise lazy)."""
@@ -177,12 +185,19 @@ class HFGotOCRTranscriber:
                 f"install the [ml] extra: pip install 'arabic-pdf-transcribe[ml]'. "
                 f"({exc})"
             ) from exc
+        # Resolve the target device first so dtype "auto" can pick
+        # bf16 / fp16 only when actually heading to CUDA.
+        self._device = resolve_device(self.config.device)
+        torch_dtype = resolve_dtype(self.config.dtype, self._device)
+        load_kwargs: dict[str, Any] = {"revision": self.config.revision}
+        if torch_dtype is not None:
+            load_kwargs["torch_dtype"] = torch_dtype
         try:
             self._processor = AutoProcessor.from_pretrained(
                 self.config.model, revision=self.config.revision
             )
             self._model = AutoModelForImageTextToText.from_pretrained(
-                self.config.model, revision=self.config.revision
+                self.config.model, **load_kwargs
             )
         except Exception as exc:  # pragma: no cover — exercised in slow test
             raise ModelDownloadError(
@@ -194,15 +209,18 @@ class HFGotOCRTranscriber:
         self._place_model()
 
     def _place_model(self) -> None:
-        """Resolve device and move model + switch to inference mode.
+        """Move model + switch to inference mode on the resolved device.
 
         Issue #18 RC#1: previously the model was left on whichever
         device ``from_pretrained`` defaulted to (CPU), so a user with
         CUDA available still ran inference on CPU — orders of
         magnitude slower. ``self._device`` is sticky so a CUDA OOM
-        mid-run can permanently downgrade us to CPU.
+        mid-run can permanently downgrade us to CPU. Issue #20: the
+        device is now resolved up-front in ``_ensure_loaded`` so
+        ``torch_dtype`` selection can depend on it.
         """
-        self._device = resolve_device(self.config.device)
+        if self._device is None:
+            self._device = resolve_device(self.config.device)
         place_model(self._model, self._device)
 
     def transcribe(self, region: Region, page_image: PILImage) -> Region:
@@ -289,10 +307,15 @@ class HFGotOCRTranscriber:
     def _run_generate(self, inputs: Any, torch: Any) -> Any:
         """Call ``model.generate`` with the configured decoding kwargs.
 
-        On a CUDA OOM (issue #18), falls back to CPU once: moves the
-        model to CPU, downgrades ``self._device`` for the rest of the
-        run, and retries. Subsequent regions stay on CPU rather than
-        re-attempting CUDA per region.
+        On a CUDA OOM:
+        * Issue #20 RC#3 — first OOM gets a single in-place retry on GPU
+          after ``torch.cuda.empty_cache()``; transient pressure (e.g. a
+          peer adapter that just released activations) can clear up
+          enough to let the retry succeed without abandoning the GPU.
+        * If the retry also OOMs (or a later region OOMs again), we
+          fall back to CPU permanently for the rest of the run: move
+          the OCR model to CPU, downgrade ``self._device``, and retry
+          on CPU. Subsequent regions stay on CPU.
         """
         kwargs = self._generate_kwargs()
         try:
@@ -301,6 +324,20 @@ class HFGotOCRTranscriber:
         except RuntimeError as exc:
             if not is_cuda_oom(exc) or self._device != "cuda":
                 raise
+            if not self._oom_retry_used:
+                self._oom_retry_used = True
+                LOGGER.warning(
+                    "OCR: CUDA OOM during generate; freeing cache and retrying on GPU once"
+                )
+                with contextlib.suppress(Exception):
+                    torch.cuda.empty_cache()
+                try:
+                    with torch.no_grad():
+                        return self._model.generate(**inputs, **kwargs)
+                except RuntimeError as retry_exc:
+                    if not is_cuda_oom(retry_exc):
+                        raise
+                    # fall through to permanent CPU fallback
             LOGGER.warning(
                 "OCR: CUDA OOM during generate; falling back to CPU for the remainder of this run"
             )
