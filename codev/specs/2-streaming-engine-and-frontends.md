@@ -44,7 +44,7 @@ The user wants the same engine to drive three frontends — CLI (existing), a lo
 - The pipeline is invoked once per CLI run; adapters (Surya OCR, DocLayout-YOLO or full-page layout, EasyOCR) are constructed inside `main()` and discarded at process exit.
 - All page rasterization, layout detection, and OCR happen serially within a single Python process driven by `argparse`.
 - The pipeline produces a single concatenated Markdown file written at the end of the run; there is no per-page artifact and no event stream.
-- Whole-document post-processing (header/footer pruning, role classification) runs only after every page has finished OCR.
+- Per-page post-processing (header/footer pruning by page-local geometry, role classification by per-page heading-quantile statistics) already runs inside the pipeline as each page completes; there is no whole-document post-processing pass today.
 - Errors that are knowable up front (missing model weights, unwritable output, invalid page ranges) surface only when the relevant code path executes, sometimes minutes into a run.
 - There is no second entrypoint, no service layer, and no UI of any kind.
 
@@ -55,13 +55,13 @@ A user running the project locally can:
 1. **Pick a frontend on launch.** A single command starts the CLI, the local web UI, or the desktop UI. Defaults are sensible; flags are minimal.
 2. **See work happen.** While the engine runs, the UI shows a progress indicator with the current page count, total page count, percentage, and a stable estimate of remaining time. Page-level events appear in real time.
 3. **Read pages as they finish.** Every page that completes OCR appears immediately as a row containing the rendered original page on the left and the transcribed Markdown on the right. The user can scroll the entire document while later pages are still processing.
-4. **Trust what they see.** Per-page text shown during streaming is a draft; once the full document finishes, the engine runs whole-document post-processing and the UI refreshes the rows with finalized text. The transition is explicit, not silent.
-5. **Cancel safely.** A visible cancel control stops new work immediately and presents three choices: **Resume** (continue from the last completed page later), **Keep** (leave the partial document on disk for review), or **Delete** (wipe the partial job). Whichever choice is made, work that was already on disk remains consistent.
+4. **Trust what they see.** Each page's transcription is final at the moment it appears: the pipeline's per-page post-processing has already run before the page is emitted. There is no separate "draft → finalized" two-stage refresh. If a future cross-page polish step is added (e.g. document-wide heading-level normalization), it is out of scope for this work and belongs in a follow-up spec.
+5. **Cancel safely.** A visible cancel control stops new work immediately and presents three choices: **Resume** (continue from the last completed page within the same running service process), **Keep** (leave the partial document on disk for review), or **Delete** (wipe the partial job). Whichever choice is made, work that was already on disk remains consistent. Cross-process resume — re-attaching to a partially completed job after the service has been restarted — is explicitly out of scope for this work and is listed in Open Questions for a follow-up.
 6. **Fail before waiting.** Any error that can be detected before compute starts — unreadable PDF, unwritable job directory, missing GPU when one is required, missing model weights with no network, invalid page selection, unsupported backend combination — must surface within the first second of a run, not later.
 7. **Reuse loaded models.** Repeated jobs against the same backend selection do not pay model-load cost a second time. Switching backends pays the cost of the new backend only.
-8. **Get a faster transcription.** With unchanged hardware and the same backend selection, end-to-end runtime on a representative document is materially shorter than today, achieved through page-render / OCR overlap, batched OCR, and reduced-precision inference where supported.
+8. **Get a faster transcription.** With unchanged hardware and the same backend selection, end-to-end runtime on a representative document is at least 30 percent shorter than today's baseline, with a stretch target of 50 percent or better. The exact speedup levers — candidates include page-render / OCR overlap via a bounded async queue, batched OCR inference within a single Surya call, and reduced-precision (fp16 / bf16) inference on capable hardware — are scoped and ordered in the implementation plan; not every lever needs to ship in this spec's work, but the success criterion above must be met before the work is considered complete.
 
-The Markdown produced for any given input remains semantically equivalent to today's CLI output once the document finishes; the speedups and the streaming UI must not change the final transcription.
+The Markdown produced for any given input remains semantically equivalent to today's CLI output; the speedups and the streaming UI must not change the final transcription.
 
 ## Stakeholders
 - **Primary Users**: The repository owner and other developers / advanced users running the project locally to transcribe Arabic PDFs interactively.
@@ -72,13 +72,13 @@ The Markdown produced for any given input remains semantically equivalent to tod
 ## Success Criteria
 
 - [ ] A single project install exposes three entrypoints — CLI, local web service, Electron shell — that share the same Python engine code path.
-- [ ] On a representative multi-page Arabic PDF, the web UI shows the first transcribed page within seconds of submission, and additional pages stream in as they finish.
+- [ ] On a representative multi-page Arabic PDF, the web UI shows the first transcribed page within five seconds of submission on a warm process (models already loaded), and additional pages stream in as they finish.
 - [ ] The Markdown produced by the new streaming pipeline is byte-identical or semantically equivalent to today's CLI output for the same backends and inputs (verified on a fixture).
-- [ ] End-to-end runtime on a representative document, with the same backend selection and hardware, is materially shorter than today's baseline. The plan defines the target ratio per phase.
+- [ ] End-to-end runtime on a representative document, with the same backend selection and hardware, is at least 30 percent shorter than today's CLI baseline (measured on the same fixture, warm process, GPU available).
 - [ ] Models are loaded once per process lifetime; a second job against the same backends starts processing pages without paying model-load cost.
 - [ ] Every input failure mode (missing PDF, unwritable target, invalid page range, missing GPU when required, missing model weights, incompatible backend pair) is detected and reported with an actionable error before any page is rasterized or OCR runs.
 - [ ] The web UI shows a progress indicator (current/total pages, percentage, elapsed, smoothed ETA) that updates as page events arrive.
-- [ ] The web UI shows side-by-side per-page rows: rendered page image on the left, rendered Markdown on the right, scrolling the whole document.
+- [ ] The web UI shows side-by-side per-page rows: rendered page image on the left, rendered Markdown on the right, scrolling the whole document. Page images are served as PNG files via a per-job HTTP endpoint that reads them from the job directory; image bytes are not embedded in event payloads.
 - [ ] A cancel control stops the run immediately and surfaces Resume / Keep / Delete; each option leaves the job directory in a documented, consistent state.
 - [ ] After cancellation, a Resume action completes the document without reprocessing pages that were already finished.
 - [ ] Job artifacts are stored under a single per-job directory whose layout is documented; no per-job state lives anywhere else.
@@ -93,7 +93,7 @@ The Markdown produced for any given input remains semantically equivalent to tod
 - The engine must remain a single Python package; the service and CLI must share one code path for layout, OCR, post-processing, and event emission.
 - The service runs only on localhost. No remote access, no auth layer, no TLS termination is part of this work.
 - Only one job runs at a time per service process. A second submission while a job is in flight is rejected with a clear error.
-- The web UI is a Svelte single-page application using SvelteKit's static adapter so that the same build runs both inside the Electron BrowserWindow and served from the Python service.
+- The web UI is a Svelte single-page application using SvelteKit's static adapter so that the same build runs both inside the Electron BrowserWindow and served from the Python service. The static adapter implies no server-side rendering and no SvelteKit server routes; all dynamic behavior is client-side JavaScript talking to the Python service over HTTP and Server-Sent Events.
 - The Electron shell is a thin Node.js wrapper that spawns the Python service as a child process; it does not embed a Python runtime.
 - Local model caches and HF Hub credentials remain unchanged. Adding a new frontend must not change how models are downloaded or where they live.
 - The streaming pipeline must not change the final Markdown output for a given input and backend selection beyond what is already produced today.
@@ -176,8 +176,8 @@ Approach 1. It is the only approach that delivers the three-frontend goal with o
 ### Important (Affects Design)
 - [ ] How is the SPA build artifact distributed alongside the Python package — checked in, built on install, or built on first launch? The plan must pick one and document it.
 - [ ] What happens if the user resizes the browser to a narrow width? The vertical-strip layout works at desktop widths; the spec does not mandate a mobile-friendly layout, but the plan should document the minimum viewport.
-- [ ] Cancel-and-Resume implies the engine can re-enter a job at page N. The plan must define exactly which pieces of per-job state are durable across process restarts and which are recomputed on resume.
-- [ ] The whole-document post-processing pass runs after streaming completes. The plan must define how the UI distinguishes draft rows from finalized rows, and how it animates the transition.
+- [ ] Cancel-and-Resume is scoped to in-process resume only in this work. The plan must specify the in-memory state machine the service uses to track completed pages and the pending-page queue, and how the Resume button re-arms it.
+- [ ] Cross-process resume — surviving a service restart — is deferred. A follow-up spec should decide what subset of job state must be persisted on disk (job manifest, completed-page list, backend selection, input-PDF digest) and how the service detects a stale or moved input PDF on re-attach.
 
 ### Nice-to-Know (Optimization)
 - [ ] Should the service expose a `/cancel` endpoint, or is cancellation triggered only via the UI? (Either is fine; the plan picks.)
@@ -243,11 +243,21 @@ Approach 1. It is the only approach that delivers the three-frontend goal with o
 | ETA estimates are wildly inaccurate on documents with mixed page complexity (e.g. a heavy table page among text pages) | Medium | Low | Use a smoothed estimator over a small window and show the source ("based on last N pages") so users can interpret variance. |
 
 ## Expert Consultation
-**Date**: pending
-**Models Consulted**: pending
-**Sections Updated**: pending
 
-Note: This document will be updated with consultation feedback before user review.
+**Date**: 2026-05-03
+**Models Consulted**: Claude Opus (independent reviewer process). Codex (GPT-5) was unavailable due to a usage limit lasting until 2026-05-08; Gemini Pro was rate-limited at the time of consultation. The user was notified and the spec was updated based on the available reviewer.
+
+**Sections Updated**:
+
+- **Current State**: Corrected a factual error. The earlier draft claimed whole-document post-processing runs after every page finishes OCR. Verification against `pipeline.py` and `roles/classify.py` showed post-processing already runs per page inside `_process_page`, with header/footer pruning using page-local geometry and heading classification using single-page heading-quantile statistics. Updated to describe the actual current behavior.
+- **Desired State (item 4)**: Removed the "draft → finalized" two-stage refresh model. Each page's transcription is final the moment it appears, because the existing per-page post-processing has already run. A future cross-page polish step is explicitly out of scope and noted as a follow-up.
+- **Desired State (item 5)**: Resume is scoped to in-process only (within a single running service process). Cross-process resume after a service restart is explicitly deferred to a follow-up spec.
+- **Desired State (item 8) and Performance Requirements / Success Criteria**: Replaced "materially shorter" with a quantitative floor of at least 30 percent reduction in end-to-end runtime on a representative document with a warm process, plus a stretch target of 50 percent or better. Time-to-first-page success criterion is now bounded at five seconds on a warm process. Speedup levers (overlap, batching, reduced precision) are explicitly framed as plan-phase scope decisions, not commitments at the spec level.
+- **Success Criteria**: Page image delivery mechanism made explicit — PNG files served via a per-job HTTP endpoint reading from the job directory, not embedded in event payloads.
+- **Technical Constraints**: Made explicit that the SvelteKit static adapter implies no server-side rendering and no SvelteKit server routes, so all dynamic behavior is client-side JavaScript over HTTP + SSE.
+- **Open Questions**: Removed the stale question about how the UI distinguishes draft rows from finalized rows (the model that required this distinction has been removed). Resume scoping is now stated as a design constraint rather than an open question, and cross-process resume is filed as the deferred follow-up.
+
+**Note on consultation coverage**: SPIR's default policy is two consultants. Only one external reviewer was available at the time of this checkpoint (Claude Opus). The spec was updated based on that reviewer's findings; a second reviewer pass is requested before user approval if upstream availability returns. Otherwise, the user has explicit authority to accept the single-reviewer pass and proceed.
 
 ## Approval
 - [ ] Technical Lead Review
