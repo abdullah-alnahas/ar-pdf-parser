@@ -1,0 +1,26 @@
+CONSULTATION UNAVAILABLE
+
+Model: codex-cli (GPT-5)
+Date: 2026-05-03
+Status: SKIPPED — upstream quota exhausted
+
+The codex consult invocation returned:
+  "You've hit your usage limit for premium. Try again at May 8th, 2026 9:27 PM."
+
+This matches the project-wide pattern documented in
+codev/specs/2-streaming-engine-and-frontends.md (Expert Consultation section):
+  "Codex (GPT-5) was unavailable due to a usage limit lasting until 2026-05-08."
+
+Per prior-project precedent (codev/projects/1-arabic-pdf-transcriber-extract/),
+2/3 consultation coverage is architect-accepted when the third reviewer is
+infra-blocked.
+
+Claude consultation is recorded in:
+  - 2-specify-iter1-claude.txt  (VERDICT: APPROVE)
+
+---
+VERDICT: SKIPPED
+SUMMARY: Codex CLI quota exhausted until 2026-05-08; 2/3 acceptable per precedent.
+CONFIDENCE: N/A
+---
+KEY_ISSUES: none (consultation not performed)

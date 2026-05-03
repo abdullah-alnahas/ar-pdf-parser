@@ -1,0 +1,40 @@
+Verified against codebase. Here's my review:
+
+## Findings
+
+### Spec Completeness: Excellent
+
+Five rounds of multi-model consultation produced a spec that's unusually watertight. State machine, API contract, directory layout, normalization rules — all defined precisely enough that a builder can implement without ambiguity.
+
+### Plan Alignment with Codebase: Verified and Sound
+
+1. **Phase 3 (docx)** — correctly identifies existing `emit/docx.py` as extension target. Existing signature is `emit_docx(regions: Iterable[Region], ...)`. Plan's approach of adding `emit_docx_pages(pages: Sequence[PageOutcome], ...)` with the old function as wrapper is clean. `python-docx==1.1.2` already in `pyproject.toml` dependencies — no new dep needed.
+
+2. **`PageOutcome` reuse** — `pipeline.py` already defines `PageOutcome` with `page_index`, `branch`, `regions`. Phase 1's engine can pipe these directly to Phase 3's docx emitter without a new type.
+
+3. **Page-index convention** — CLI's `_parse_pages()` converts 1-based input to 0-based. Pipeline uses 0-based internally. Spec mandates 1-based in API/events. Plan correctly identifies the conversion boundary. No contradiction.
+
+4. **Existing `--format docx` flag** — Plan Phase 3 correctly says "no new `--docx` flag"; extends existing mechanism. CLI already wires `emit_docx(result.regions, args.output)` at line 682.
+
+### Issues Found
+
+**One substantive gap:**
+
+The existing `emit_docx` call in `cli.py` line 682 passes `result.regions` (flat tuple). After Phase 3, the CLI needs to pass `result.pages` (page-grouped) to `emit_docx_pages` to get page breaks. The plan says the Phase-1 engine retains per-page Region lists, but **Phase 3's deliverables don't explicitly state updating `cli.py:_write_output()`** to call the new `emit_docx_pages` with `result.pages` instead of `result.regions`. It's implied but should be explicit — a builder might miss it and leave the CLI calling the backward-compat flat wrapper (which produces a single-page doc).
+
+**Minor observations (not blocking):**
+
+- Phase 4 says `asyncio.Queue(maxsize=4)` for raster-ahead. Since `pypdfium2` releases GIL during rendering, this is real parallelism via threads. Sound. But the CLI currently has no asyncio loop — the plan notes "CLI keeps its synchronous-looking surface; under the hood it runs an asyncio loop." This is a non-trivial change to `cli.main()`. Phase 1 rewrites the CLI once; Phase 4 rewrites it again. Consider whether Phase 1 should already scaffold the asyncio entry so Phase 4 is purely adding the queue.
+
+- Phase 6 commits `frontend/build/` to the repo. CI verifies freshness. This works for the stated audience (developers) but git history will bloat with each SPA rebuild. Documented as a known trade-off; acceptable for now.
+
+- The spec's `warming` SSE event has `phase ∈ {"loading", "ready"}` but Phase 5's deliverables don't explicitly test the warm-hit scenario where `warming` emits only `phase: "ready"` (no preceding "loading"). Test scenario 8 in the spec covers this — just ensure the Phase 5 test plan includes it (it's listed in the spec's functional tests but not repeated verbatim in Phase 5's test plan).
+
+---
+VERDICT: APPROVE
+SUMMARY: Spec and plan are exceptionally thorough; one minor CLI wiring gap in Phase 3 that a careful builder will catch from context.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- Phase 3 should explicitly state that `cli.py:_write_output()` must be updated to call `emit_docx_pages(result.pages, ...)` instead of `emit_docx(result.regions, ...)` — otherwise the backward-compat wrapper defeats the page-break feature in CLI mode.
