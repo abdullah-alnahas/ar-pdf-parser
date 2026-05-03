@@ -1,7 +1,7 @@
 id: bugfix-22
 title: fp16-bf16-path-broken-image-in
 protocol: bugfix
-phase: investigate
+phase: fix
 plan_phases: []
 current_plan_phase: null
 gates: {}
@@ -9,4 +9,4 @@ iteration: 1
 build_complete: false
 history: []
 started_at: '2026-05-03T01:08:06.865Z'
-updated_at: '2026-05-03T01:08:06.866Z'
+updated_at: '2026-05-03T01:11:34.233Z'
