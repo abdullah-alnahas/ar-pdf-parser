@@ -90,11 +90,12 @@ The Markdown produced for any given input remains semantically equivalent to tod
 ## Constraints
 
 ### Technical Constraints
-- The engine must remain a single Python package; the service and CLI must share one code path for layout, OCR, post-processing, and event emission.
+- The engine must remain a single Python package; the service and CLI must share one code path for layout, OCR, post-processing, and event emission. The CLI continues to import and run the engine in-process — it does **not** become a network client of the service. The service is an additional, optional entrypoint that wraps the same engine objects with a long-running HTTP layer.
 - The service runs only on localhost. No remote access, no auth layer, no TLS termination is part of this work.
 - Only one job runs at a time per service process. A second submission while a job is in flight is rejected with a clear error.
+- Per-job artifacts (rasterized page PNGs, per-page Markdown, events log, final result) are retained on disk by default until the user explicitly cleans them via a documented command. They are never deleted as a side effect of finishing, cancelling, or restarting a job.
 - The web UI is a Svelte single-page application using SvelteKit's static adapter so that the same build runs both inside the Electron BrowserWindow and served from the Python service. The static adapter implies no server-side rendering and no SvelteKit server routes; all dynamic behavior is client-side JavaScript talking to the Python service over HTTP and Server-Sent Events.
-- The Electron shell is a thin Node.js wrapper that spawns the Python service as a child process; it does not embed a Python runtime.
+- The Electron shell is a thin Node.js wrapper that spawns the Python service as a child process; it does not embed a Python runtime. The shell is launched from the repository via a documented Node command (e.g. `npm run electron`) and assumes the Python project is already installed in the user's active environment. The exact command is fixed in the README during this work.
 - Local model caches and HF Hub credentials remain unchanged. Adding a new frontend must not change how models are downloaded or where they live.
 - The streaming pipeline must not change the final Markdown output for a given input and backend selection beyond what is already produced today.
 - The new entrypoints must coexist with the existing CLI without breaking any currently passing test.
@@ -182,7 +183,7 @@ Approach 1. It is the only approach that delivers the three-frontend goal with o
 ### Nice-to-Know (Optimization)
 - [ ] Should the service expose a `/cancel` endpoint, or is cancellation triggered only via the UI? (Either is fine; the plan picks.)
 - [ ] Should ETA smoothing be moving-average, median over a window, or something else? (The plan picks.)
-- [ ] Should rasterized page PNGs be deleted after a job ends, or retained for offline review? (The plan picks; a `clean` command exists either way.)
+- [ ] When the user runs the documented `clean` command, what is the cutoff (delete only fully completed jobs older than N days, or wipe everything)? Per-job retention is mandated by the Technical Constraints; this question is purely about the cleanup ergonomics.
 
 ## Performance Requirements
 
@@ -234,9 +235,9 @@ Approach 1. It is the only approach that delivers the three-frontend goal with o
 
 | Risk | Probability | Impact | Mitigation Strategy |
 |------|-------------|--------|---------------------|
-| Streaming output diverges from final post-processed output, confusing reviewers | Medium | Medium | Mark draft rows visibly in the UI; refresh on `pipeline_done`; add a fixture test that compares streaming-final to current CLI output. |
+| Streaming output drifts from the existing CLI's output for the same input | Medium | High | Add a fixture test that compares the concatenated streaming output to today's CLI output for the same backends; gate every phase commit on it staying green. |
 | Engine refactor introduces regressions in existing CLI runs | Medium | High | Keep the CLI test suite as the regression gate; refactor in small, committed phases per the plan; run end-to-end fixtures after every phase. |
-| Resume across process restarts requires more state durability than the current pipeline supports | Medium | Medium | The plan must scope what state is durable; if full cross-process resume is too costly, scope Resume to in-process only and document. |
+| In-process Resume races a finishing job (user clicks Resume after the last page already streamed) | Low | Low | Resume is a no-op when there is no remaining work; the UI hides the action once the job is complete. |
 | Bundling SPA build alongside Python package becomes painful (build-on-install vs check-in trade-off) | Medium | Low | Decide early in the plan; document the choice in README. |
 | Electron child-process management leaves zombie Python processes | Low | Medium | Explicit child lifecycle in the Electron main process; integration test that asserts no orphaned process on shutdown. |
 | Single concurrent job assumption breaks future SaaS migration | Low | Low | Document the assumption explicitly; SaaS migration can layer a queue in front of the service without changing the engine. |
@@ -257,7 +258,13 @@ Approach 1. It is the only approach that delivers the three-frontend goal with o
 - **Technical Constraints**: Made explicit that the SvelteKit static adapter implies no server-side rendering and no SvelteKit server routes, so all dynamic behavior is client-side JavaScript over HTTP + SSE.
 - **Open Questions**: Removed the stale question about how the UI distinguishes draft rows from finalized rows (the model that required this distinction has been removed). Resume scoping is now stated as a design constraint rather than an open question, and cross-process resume is filed as the deferred follow-up.
 
-**Note on consultation coverage**: SPIR's default policy is two consultants. Only one external reviewer was available at the time of this checkpoint (Claude Opus). The spec was updated based on that reviewer's findings; a second reviewer pass is requested before user approval if upstream availability returns. Otherwise, the user has explicit authority to accept the single-reviewer pass and proceed.
+**Second pass — Gemini 3 Flash Preview, 2026-05-03**:
+- Flagged a contradiction in the **Risks and Mitigation** table: a row about marking "draft rows visibly" had survived from the original draft and contradicted the corrected Desired State. The risk row was rewritten to be about output equivalence instead of draft markers.
+- Asked for the **CLI / service relationship** to be made explicit. Technical Constraints now state that the CLI imports and runs the engine in-process and is **not** a network client of the service.
+- Asked for **per-job artifact retention** to be a spec-level guarantee rather than a plan choice, because Resume depends on it. Technical Constraints now mandate retention until explicit cleanup; the cleanup-ergonomics question stays in Open Questions.
+- Asked how the **Electron entrypoint** is exposed in a source-install environment. Technical Constraints now state the shell launches via a documented Node command and assumes the Python environment is already installed.
+
+**Note on consultation coverage**: SPIR's default policy is two consultants. Two reviewers were available across the two passes (Claude Opus and Gemini 3 Flash Preview); Codex (GPT-5.4) was unavailable at this checkpoint due to a usage limit lasting until 2026-05-08, so the second consultant slot was filled by Gemini once its rate limit recovered. The user is aware of and accepted this substitution.
 
 ## Approval
 - [ ] Technical Lead Review
