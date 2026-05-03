@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-05-03
+
+### Fixed
+
+- **fp16/bf16 path on non-Ampere CUDA (issue #22)**: v0.1.5 loaded the
+  layout + OCR models in fp16 on Turing GPUs (compute capability 7.5,
+  e.g. GTX 1660 Ti) but the HF image processor still produced fp32
+  `pixel_values`, causing every page to fail with `RuntimeError: Input
+  type (float) and bias type (c10::Half) should be the same`. The
+  shared `move_inputs_to_device` helper now optionally casts every
+  floating-point tensor (`pixel_values` and friends) to the model
+  dtype while leaving integer tensors (`input_ids`, `attention_mask`)
+  alone. Both adapters store the resolved `torch_dtype` and pass it
+  to the helper on every input-prep call, including CPU-fallback
+  paths. Regression test exercises the path with real torch tensors
+  + fp16 stub model.
+
 ## [0.1.5] - 2026-05-03
 
 ### Fixed
