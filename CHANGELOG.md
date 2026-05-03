@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-05-03
+
+### Fixed
+
+- **GPU OOM on 6 GB cards (issue #20)**: layout (DiT-base) and OCR
+  (GOT-OCR-2.0) co-resident in fp32 exceeded VRAM on a GTX 1660 Ti,
+  forcing a permanent CPU fallback for the entire run after a single
+  `CUDA OOM during generate` on page 2. Four fixes:
+  - **fp16 / bf16 by default on CUDA**. New `dtype` field on both
+    adapter configs, propagated as `torch_dtype=` to `from_pretrained`.
+    `auto` selects bf16 on Ampere+, fp16 on older CUDA, fp32 on CPU.
+  - **Layout model evicts to CPU between pages on CUDA** (default-on
+    via `HFLayoutDetectorConfig.evict_after_inference`). OCR no longer
+    competes with layout for VRAM during decode.
+  - **Single OOM retries once on GPU** before falling back to CPU
+    permanently — handles transient KV-cache pressure without losing
+    GPU acceleration for the whole document.
+  - **`OCRConfig.max_new_tokens` lowered 1024 → 512** to cap KV-cache
+    growth (still ~5× the 99th-percentile paragraph).
+
+### Added
+
+- **`--dtype {auto,float32,float16,bfloat16}` CLI flag and
+  `[runtime].dtype` / per-section `[layout].dtype`, `[ocr].dtype`
+  TOML entries (issue #20)**: precedence chain CLI > `[runtime]` >
+  per-section > `auto`.
+
 ## [0.1.4] - 2026-05-03
 
 ### Fixed
