@@ -29,9 +29,9 @@ Inherited from `codev/specs/2-streaming-engine-and-frontends.md` (Success Criter
 ```json
 {
   "phases": [
-    {"id": "phase_1", "title": "Engine refactor: singleton, events, per-page artifacts"},
-    {"id": "phase_2", "title": "Job state machine, cancel/resume in-process, reference fixture, equivalence test"},
-    {"id": "phase_3", "title": "Docx export with page boundaries (CLI flag)"},
+    {"id": "phase_1", "title": "Engine refactor: singleton, events, per-page artifacts, reference fixture, baseline, clean command"},
+    {"id": "phase_2", "title": "Job state machine, cancel/resume in-process, equivalence harness"},
+    {"id": "phase_3", "title": "Docx export — extend existing emitter with page boundaries and RTL paragraph direction"},
     {"id": "phase_4", "title": "Speedup: render/OCR overlap and benchmark"},
     {"id": "phase_5", "title": "FastAPI service: routes, SSE, healthz, off-loop inference"},
     {"id": "phase_6", "title": "Svelte SPA: submit, side-by-side strip, virtualized rows"},
@@ -43,41 +43,50 @@ Inherited from `codev/specs/2-streaming-engine-and-frontends.md` (Success Criter
 
 ## Phase Breakdown
 
-### Phase 1: Engine refactor — singleton, events, per-page artifacts
+### Phase 1: Engine refactor — singleton, events, per-page artifacts, reference fixture, baseline, clean command
 **Dependencies**: None
 
 #### Objectives
 - Lift adapter construction out of `cli.main()` and into a long-lived `Engine` object that can be reused across jobs.
 - Introduce a typed event channel so the pipeline can emit `page_started`, `page_done`, `warming`, `pipeline_done`, etc., to any consumer.
 - Make every page produce its own on-disk artifacts (PNG raster + Markdown chunk) inside a per-job directory before the pipeline finishes, so future phases can stream and resume.
-- Preserve current CLI behavior bit-for-bit; this phase is engine-internal plumbing only.
+- Commit the reference fixture, its expected per-page artifacts, and the **frozen pre-refactor benchmark baseline** so later phases have a single source of truth to measure against.
+- Ship the documented job-directory cleanup command alongside the directory layout it cleans.
+- Apply the spec's tier-1 input-validation discipline to the CLI synchronously, before any model load.
+- Preserve current CLI transcription output (under canonical normalization); this phase is engine-internal plumbing only.
 
 #### Deliverables
-- [ ] New module `arabic_pdf_transcribe.engine` defining `Engine` (holds the layout + OCR adapters) and `Job` (per-invocation state + job directory handle).
-- [ ] New module `arabic_pdf_transcribe.events` defining `PipelineEvent` dataclasses matching the SSE event types in the spec (job_accepted, warming, page_started, page_done, page_failed, state_change, pipeline_done, pipeline_failed) and an `EventEmitter` protocol.
-- [ ] Modified `pipeline.transcribe()` accepts a `job_dir: Path` and an `EventEmitter`, writes `pages/NNNN.png` (the page raster) and `pages/NNNN.md` (the per-page Markdown) for every page that completes, writes `manifest.json` + `events.jsonl` continuously, and writes `result.md` at completion.
-- [ ] `cli.main()` rewritten to construct an `Engine`, build a `Job` against a default per-invocation directory under `~/.cache/arabic-pdf-transcribe/jobs/<uuid>/`, attach a stderr `EventEmitter`, and copy `result.md` to the user's `-o` path on success.
-- [ ] CLI prints a one-line status per `page_done` event when stdout is a TTY (mirroring today's progress bar behavior), JSON Lines events when `--json-logs` is set.
-- [ ] Unit tests for `Engine` construction (no model load until first `transcribe`), for the `EventEmitter` contract, for `manifest.json` schema, for `events.jsonl` append-only invariant.
+- [ ] New module `arabic_pdf_transcribe.engine` defining `Engine` (holds the layout + OCR adapters with an in-memory cache keyed by backend selection) and `Job` (per-invocation state + job directory handle).
+- [ ] New module `arabic_pdf_transcribe.events` defining `PipelineEvent` dataclasses matching the SSE event types in the spec (job_accepted, warming, page_started, page_done, page_failed, state_change, pipeline_done, pipeline_failed) and an `EventEmitter` protocol. Every event carries an integer monotonic `id` field that is also used as the SSE `id:` line in Phase 5 — persisted as the leading column of every `events.jsonl` row so `Last-Event-ID` replay can resume by line offset.
+- [ ] Modified `pipeline.transcribe()` accepts a `job_dir: Path` and an `EventEmitter`, writes `pages/NNNN.png` (the page raster) and `pages/NNNN.md` (the per-page Markdown) for every page that completes, writes `manifest.json` + `events.jsonl` continuously, and writes `result.md` at completion. Per-page Markdown is generated via the existing `emit/markdown.py` for the per-page slice of regions; the engine retains the per-page `Region` lists in memory so Phase 3's docx emitter can consume them without re-parsing Markdown.
+- [ ] `cli.main()` rewritten to: (1) run all tier-1 input validation synchronously (writable `-o`, valid PDF, valid `--pages`, supported backend pair) before any model touches happen; (2) construct an `Engine`; (3) build a `Job` rooted under `<jobs_root>/<uuid>/` (default `~/.cache/arabic-pdf-transcribe/jobs/`, overridable via `ARABIC_PDF_TRANSCRIBE_JOBS_ROOT`); (4) attach a stderr `EventEmitter`; (5) copy `result.md` to the user's `-o` path on success. The user-facing surface and flags remain unchanged.
+- [ ] New CLI subcommand `arabic-pdf-transcribe clean [--older-than DAYS] [--all]` that removes job directories under the jobs root. `--older-than` defaults to deleting only jobs in a terminal state (`completed`/`cancelled`/`failed`) older than the given number of days; `--all` wipes everything regardless of age or state. This implements the spec's mandated cleanup command.
+- [ ] CLI prints one human-readable status line per `page_done` when stdout is a TTY, JSON Lines events when `--json-logs` is set.
+- [ ] Reference fixture committed at `tests/fixtures/pdfs/reference.pdf` with documented page count, layout mix, and licensing in `tests/fixtures/pdfs/LICENSES.md`. The expected per-page Markdown and concatenated `result.md` are committed alongside under canonical normalization.
+- [ ] Frozen baseline measurement committed at `tests/fixtures/benchmarks/baseline.json`, captured by running the **previous CLI** (Phase-0 git checkout) on the reference fixture three times, recording the median wall-clock plus hardware metadata. Phase 4 measures against this artifact, not against a re-run of an older CLI.
+- [ ] Unit tests for `Engine` construction (no model load until first `warm`), for the `EventEmitter` contract, for `manifest.json` schema, for `events.jsonl` append-only invariant, for the `clean` command (file-system semantics).
 - [ ] Existing CLI test suite still passes unchanged.
 
 #### Implementation Details
 
-- `Engine` holds `layout_detector: LayoutDetector | None`, `ocr_transcriber: OCRTranscriber | None`, plus a small in-memory cache keyed by `(layout_backend_name, ocr_backend_name)` so a second job with the same backends reuses adapters. Adapters are constructed lazily on first `Engine.warm(...)` call.
+- `Engine` holds an LRU-of-1 cache: the most recent `(layout_backend_name, ocr_backend_name)` keeps its adapters loaded; a switch evicts the previous selection (matching the spec's Desired State item 7). Adapters are constructed lazily on first `Engine.warm(...)` call.
 - `Job` carries `job_id: str` (uuid4 hex), `job_dir: Path`, `manifest: Manifest`, an open file handle on `events.jsonl`, and the full set of validated CLI options. The job directory is created eagerly so tier-1 errors surface immediately.
-- `PipelineEvent` is a `@dataclass(frozen=True)` discriminated by a `kind` field. JSON serialization uses a single `Event.to_dict()` method that produces the SSE payload shape directly (job_id always present, page_index 1-based).
-- `EventEmitter` is a `Protocol` with `emit(event: PipelineEvent) -> None`. The pipeline depends only on the protocol. Two concrete emitters ship in this phase: `FileEmitter` (writes `events.jsonl`) and `StderrEmitter` (used by the CLI). A `MultiEmitter` fans events out to several listeners (Phase 5's service emitter will join here).
+- `PipelineEvent` is a `@dataclass(frozen=True)` discriminated by a `kind` field. JSON serialization via a single `Event.to_dict()` produces the SSE payload shape directly (job_id always present, page_index 1-based, monotonic `id`).
+- `EventEmitter` is a `Protocol` with `emit(event: PipelineEvent) -> None`. The pipeline depends only on the protocol. Three concrete emitters ship: `FileEmitter` (writes `events.jsonl`), `StderrEmitter` (CLI), and `MultiEmitter` (fan-out, used by both the CLI and Phase 5's service).
 - The `pipeline.transcribe()` rewrite still drives pages serially; render/OCR overlap is deferred to Phase 4. Per-page write order is **PNG → Markdown → events.jsonl append**, matching the spec's source-of-truth rule for the events log.
-- `manifest.json` is rewritten in place atomically (temp file + rename) on every `page_done`. `events.jsonl` is append-only, never rewritten.
+- `manifest.json` is rewritten atomically (temp file + rename) on every `page_done`. `events.jsonl` is append-only, never rewritten.
 - The CLI keeps its current `-o` flag semantics by copying `result.md` from the job dir; the job dir itself is retained per the spec's retention rule.
+- The frozen baseline file (`tests/fixtures/benchmarks/baseline.json`) records: `{median_wallclock_seconds, runs: [...], hardware: {gpu_name, cpu, ram_gb}, model_versions, git_sha}`. The capture script (`scripts/capture_baseline.py`) runs against a temporary `git worktree` of the parent commit so the measurement is reproducible.
 
 #### Acceptance Criteria
-- [ ] Running `arabic-pdf-transcribe <pdf> -o out.md` on the reference fixture (added in Phase 2) produces an `out.md` whose canonical-normalization-byte-equivalent matches the same fixture's expected output committed in this phase.
-- [ ] On the same run, `~/.cache/arabic-pdf-transcribe/jobs/<uuid>/pages/` contains one PNG and one Markdown file per processed page, all 1-based and zero-padded to four digits.
-- [ ] `events.jsonl` contains exactly one `page_done` event per processed page, in monotonic page-index order, with absolute `image_url` and `markdown_url` paths matching the spec's API URL shape (even though no HTTP server runs yet).
+- [ ] Running `arabic-pdf-transcribe tests/fixtures/pdfs/reference.pdf -o /tmp/out.md` produces an `out.md` whose canonical-normalization-byte-equivalent matches `tests/fixtures/pdfs/reference.expected.md` committed in this phase. (The full equivalence harness lands in Phase 2; Phase 1 ships only the smoke-test version.)
+- [ ] On the same run, `<jobs_root>/<uuid>/pages/` contains one PNG and one Markdown file per processed page, all 1-based and zero-padded to four digits, and `events.jsonl` contains exactly one `page_done` event per processed page in monotonic order, each carrying an integer `id`, absolute `image_url` and `markdown_url` paths in the spec's URL shape (even though no HTTP server runs yet).
+- [ ] Submitting a job with an unwritable `-o` path, a missing PDF, an invalid `--pages` selection, or an unsupported backend pair fails synchronously with exit code 2 and an actionable error message, before any model load.
+- [ ] `arabic-pdf-transcribe clean --older-than 0` removes terminal-state job directories; `--all` removes every directory regardless of state. Active jobs (manifest.status not in the terminal set) are never removed.
 - [ ] Submitting two jobs back-to-back inside the same Python process via the public `Engine` API loads adapters once (verified by mocking the adapter constructors and asserting call count).
+- [ ] `tests/fixtures/benchmarks/baseline.json` exists, is committed, and contains a median wall-clock value plus the hardware metadata block.
 - [ ] `pytest` is fully green; no test that passed before this phase fails.
-- [ ] No public CLI flag added or removed.
+- [ ] No user-visible change in CLI flag surface (besides the new `clean` subcommand).
 
 #### Test Plan
 - **Unit Tests**: Engine warm-cache hit/miss; FileEmitter append-only invariant; PipelineEvent → SSE-payload round-trip; manifest.json schema; per-page write ordering.
@@ -108,9 +117,8 @@ Single-commit phase; revert with `git revert <hash>`. The CLI surface is unchang
 - [ ] `Job` gains a `cancellation_token: threading.Event` (or `asyncio.Event`, depending on Phase 5's needs — the API is `is_set()`/`set()`/`wait()` either way) checked at every safe point: between adapter loads in `warming`, between pages in `running`, and inside the per-page validator/ML loop at coarse boundaries.
 - [ ] `Job.resume()` recomputes pending pages from `manifest.completed_pages` minus the original `page_selection` and re-enters the loop.
 - [ ] CLI gains `--cancel-on-signal` (default on): SIGINT triggers cancel and prints "Cancelled. Resume with: `arabic-pdf-transcribe --resume <job_id>`" rather than killing the process. `--resume <job_id>` is a CLI flag that re-attaches to a job dir and continues.
-- [ ] Reference fixture committed at `tests/fixtures/pdfs/reference.pdf` (a small Arabic PDF with documented page count, layout mix, and licensing) plus an expected-output checked in alongside.
-- [ ] `arabic_pdf_transcribe.testing.equivalence` module implementing the canonical normalization (line endings → `\n`, NFC, trailing-whitespace strip, multi-blank-line collapse, terminal newline) and a `assert_markdown_equivalent(actual, expected)` helper.
-- [ ] CI test running the equivalence check on every commit; this becomes the regression gate for Phases 3–8.
+- [ ] `arabic_pdf_transcribe.testing.equivalence` module implementing the canonical normalization (line endings → `\n`, NFC, trailing-whitespace strip, multi-blank-line collapse, terminal newline) and an `assert_markdown_equivalent(actual, expected)` helper.
+- [ ] CI test running the equivalence check on every commit using the reference fixture committed in Phase 1; this becomes the regression gate for Phases 3–8.
 
 #### Implementation Details
 
@@ -145,59 +153,60 @@ Revert the commit. The state machine is internal; the only public surface added 
 
 ---
 
-### Phase 3: Docx export with page boundaries (CLI flag)
-**Dependencies**: Phase 1
+### Phase 3: Docx export — extend existing emitter with page boundaries and RTL paragraph direction
+**Dependencies**: Phase 1, Phase 2
 
 #### Objectives
-- Ship the docx export the spec mandates as a hard user requirement, accessible from the CLI today (the service in Phase 5 picks it up for free).
+- Ship the docx export the spec mandates as a hard user requirement, **by extending the existing `arabic_pdf_transcribe.emit.docx` module** (Region-based, deterministic, already wired through the CLI's `--format docx` flag) — not by adding a parallel Markdown→docx path.
+- Add the two things the existing emitter is missing: hard page breaks between PDF pages, and `<w:bidi/>` paragraph direction on every paragraph (the existing emitter already inserts character-level RLM marks via `_bidi.add_rlm_if_needed`; paragraph-level RTL is the missing piece).
 - Guarantee the spec's invariants: hard page break between every pair of consecutive PDF pages; RTL paragraph direction on every paragraph; no cross-page text leakage; figure regions rendered as the literal text placeholder `[Figure: page N, region M]`.
 
 #### Deliverables
-- [ ] New module `arabic_pdf_transcribe.export.docx` providing `markdown_pages_to_docx(per_page_md_paths: Sequence[Path]) -> bytes` and `Job.write_docx(out_path: Path) -> None`.
-- [ ] CLI flag `--docx <path>` (alongside the existing `-o` for Markdown). Specifying both is allowed; specifying only `--docx` skips Markdown copy.
-- [ ] New dependency: `python-docx` (added to `pyproject.toml` core deps; the spec already approved it).
-- [ ] Heading levels (`#`, `##`, `###`) → Word `Heading 1` / `Heading 2` / `Heading 3` styles; bullet/numbered lists → Word list styles; tables → Word tables; figures → literal `[Figure: page N, region M]` paragraph; everything else → `Normal` style.
-- [ ] RTL is set on every paragraph via `<w:bidi/>` in `<w:pPr>` and on every table via `<w:bidiVisual/>` in `<w:tblPr>`.
-- [ ] Hard page break inserted between consecutive per-page Markdown files (one `<w:br w:type="page"/>` between every adjacent pair, never before the first page or after the last).
-- [ ] Tests under `tests/test_docx_export.py` cover: page-break count = N − 1; every `<w:p>` has `<w:bidi/>`; per-page text presence (run page N's known unique token through the docx and assert it appears in the section after the (N−1)-th page break and not after the N-th).
+- [ ] `emit_docx` extended to accept **page-grouped Region input** — concretely, a `Sequence[PageOutcome]` (the per-page Region slice the engine already keeps in memory from Phase 1) instead of a flat `Iterable[Region]`. The flat-iterable signature is preserved as a thin wrapper that produces a single-page document, so the existing `--format docx` CLI surface keeps working unchanged.
+- [ ] Hard page break inserted between consecutive `PageOutcome` entries: a paragraph with a single run carrying `add_break(WD_BREAK.PAGE)`, never before the first page or after the last. Page-break paragraphs do not count against the "every paragraph has RTL" invariant.
+- [ ] `<w:bidi/>` set in every paragraph's `<w:pPr>` and `<w:bidiVisual/>` set in every table's `<w:tblPr>`. Implemented as a single XML helper called from the existing `_add_*` functions in `emit/docx.py`; existing per-character RLM logic (`add_rlm_if_needed`) is preserved.
+- [ ] Figure handling adjusted: when a `Region` has `role == FIGURE` and `text == ""`, the docx paragraph is the literal `[Figure: page N, region M]` (replacing the existing "Figure on page N" placeholder so it carries the region index too). The Phase 1 pipeline already retains region indices; this change is in `_add_figure`.
+- [ ] CLI: existing `--format docx -o out.docx` mechanism unchanged; what changes is that the underlying call now receives the page-grouped Region list from the new `Job` and produces a multi-page document with breaks. **No new `--docx` flag is added** — the spec mandates docx export, not a particular flag.
+- [ ] Service-side lazy build (Phase 5) and CLI-side eager build call into the same `emit_docx` function. The CLI builds eagerly when `--format docx` is set; the service builds on first GET of `/jobs/{id}/result.docx`, caches the result inside the job directory at `result.docx`, and serves the cached bytes for subsequent requests — failures are not cached (Phase 5 implements the caching layer; Phase 3 ships the pure function it depends on).
+- [ ] Tests under `tests/test_emit_docx_pages.py`: page-break count = N − 1 on the reference fixture; `<w:bidi/>` present in every `<w:pPr>`; sentinel-token-per-page boundary test (a synthetic fixture with a unique token per page is processed; token for page N is asserted to live in the docx's run sequence between break (N−1) and break N); existing single-page docx tests still green.
 
 #### Implementation Details
 
-- `markdown_pages_to_docx` parses each per-page Markdown with a small, well-tested Markdown-AST library (the plan suggests `markdown-it-py` because it produces a token stream that is easy to walk; we are not rendering HTML so no extra deps are needed).
-- The token-walker maps each top-level token to a `python-docx` operation. Heading tokens become `document.add_heading(text, level)`; paragraphs become `document.add_paragraph()` with text runs added per inline token; lists become numbered/bulleted paragraphs; tables map straightforwardly via `document.add_table()`.
-- For every paragraph and every table, an XML helper sets `<w:bidi/>` / `<w:bidiVisual/>`. This is the cleanest way to set RTL with `python-docx`; see `python-docx` README discussions for the canonical pattern.
-- Between pages, `document.add_paragraph()` followed by `run.add_break(WD_BREAK.PAGE)` inserts the hard page break. The page-break paragraph itself is excluded from the "every paragraph has RTL" invariant by construction (it has no text), but we set RTL on it anyway for consistency.
-- Figure handling: when the per-page Markdown contains a figure marker (today the pipeline emits an HTML comment `<!-- figure: page=N region=M -->` for figure regions whose text is empty), the exporter emits `[Figure: page N, region M]` as a paragraph. If the figure marker convention is not present today, Phase 3 also adds it to the per-page Markdown writer in Phase 1's pipeline so the exporter has something to detect.
-- Cancelled jobs do not produce a docx; the CLI `--docx` flag returns a clear error if `manifest.status != "completed"`.
+- The new entry point is `emit_docx_pages(pages: Sequence[PageOutcome], out_path: Path, *, normalisation: NormalisationForm = NFC) -> None`. The original `emit_docx(regions: Iterable[Region], ...)` becomes a single-element wrapper: `emit_docx_pages([PageOutcome(regions=list(regions), page_index=1)], out_path)`.
+- The XML helper for `<w:bidi/>` is small (`OxmlElement('w:bidi')` set on `pPr.get_or_add_pPr()`); the same idiom for `<w:bidiVisual/>` on tables. No new dependency, no Markdown parser, no `markdown-it-py`. **`python-docx` is already a dependency** (the existing emitter uses it).
+- The "no cross-page text leakage" invariant is structural: the function loops over `pages`, emits all paragraphs/tables for `pages[i]`, then unconditionally appends a break before `pages[i+1]`. There is no scenario in which page N's region content can land in another page's section.
+- Cancelled jobs do not produce a docx. The CLI surfaces this by refusing `--format docx` against a job whose `manifest.status != "completed"`. The service surfaces this with `404 Not Found` on `GET /result.docx` (matching the spec's "404 until pipeline_done" rule).
+- `python-docx` is pinned to its tested minor version in `pyproject.toml`.
 
 #### Acceptance Criteria
-- [ ] `arabic-pdf-transcribe <pdf> --docx out.docx` on the reference fixture produces a docx whose page-break count = page count − 1.
-- [ ] Inspecting `out.docx` with `unzip -p out.docx word/document.xml` shows `<w:bidi/>` inside every `<w:p>/<w:pPr>` element.
-- [ ] A test file containing a unique sentinel token on each fixture page is processed; the sentinel for page N is found in the docx text body in the segment between page break (N−1) and page break N (or before the first break for N=1, or after the last break for N=total).
-- [ ] `arabic-pdf-transcribe --resume <id> --docx ...` works on a Resume that ends in `completed`.
-- [ ] `arabic-pdf-transcribe --docx ...` against a `cancelled` job returns a non-zero exit code and prints an actionable error.
-- [ ] Markdown export remains the default and is unchanged.
+- [ ] `arabic-pdf-transcribe tests/fixtures/pdfs/reference.pdf --format docx -o /tmp/out.docx` produces a docx whose page-break count equals (number of transcribed pages) − 1.
+- [ ] Inspecting the output with `unzip -p /tmp/out.docx word/document.xml` shows `<w:bidi/>` inside every `<w:p>/<w:pPr>` element of body paragraphs.
+- [ ] A synthetic fixture with a unique sentinel token on each page produces a docx where every sentinel appears strictly inside its expected page section (asserted by walking the document's element tree).
+- [ ] `--resume <id> --format docx -o ...` works on a Resume that ends in `completed`.
+- [ ] `--format docx` against a `cancelled` or `failed` job returns a non-zero exit code with an actionable message.
+- [ ] Existing single-page docx tests still pass.
+- [ ] No new `--docx` flag exists; the docx surface is the existing `--format docx` plus the Phase-5 HTTP route.
 
 #### Test Plan
-- **Unit Tests**: per-page-MD-token → docx-element mapping for headings, paragraphs, lists, tables, figures; RTL XML attribute presence; page-break count.
-- **Integration Tests**: full pipeline → docx on the reference fixture; sentinel-per-page boundary test; corrupt-Markdown handling returns a typed exception.
-- **Manual Testing**: open generated docx in LibreOffice and visually confirm RTL rendering of Arabic.
+- **Unit Tests**: page-break-count function; `<w:bidi/>` injection helper; figure-placeholder text shape; flat-iterable backward-compat wrapper.
+- **Integration Tests**: full pipeline → docx on the reference fixture; sentinel-per-page invariant; resume + docx; cancelled-job docx-refusal.
+- **Manual Testing**: open the generated docx in LibreOffice and Microsoft Word and visually confirm RTL rendering and per-page boundaries.
 
 #### Rollback Strategy
-Revert the commit. The `--docx` flag is purely additive; removing it does not affect the Markdown path.
+Revert. The page-grouping signature is a strict superset of the existing flat-iterable signature; reverting restores the prior single-page behavior. The CLI's `--format docx` still works either way.
 
 #### Risks
-- **Risk**: a Markdown construct the parser cannot represent in docx silently produces wrong output.
-  - **Mitigation**: parser failures raise; the CLI surfaces the failure with the offending page number; integration tests cover heading/list/table/figure constructs from the reference fixture explicitly.
-- **Risk**: `python-docx` API changes between versions.
-  - **Mitigation**: pin to a tested minor version in `pyproject.toml`.
-- **Risk**: RTL still renders LTR in some Word/LibreOffice versions despite `<w:bidi/>`.
-  - **Mitigation**: also set `<w:rtl/>` on every run inside the paragraph (belt-and-braces); document the tested-against versions in the docx export module's docstring.
+- **Risk**: existing single-page docx callers break because the function now expects `PageOutcome`.
+  - **Mitigation**: keep the flat-iterable signature as a wrapper; add a regression test covering it.
+- **Risk**: RTL still renders LTR in some Word versions despite `<w:bidi/>`.
+  - **Mitigation**: also set `<w:rtl/>` on every run inside the paragraph (belt-and-braces); document tested-against versions in the module docstring.
+- **Risk**: figure-placeholder format change (`Figure on page N` → `[Figure: page N, region M]`) breaks an external tool that scrapes the existing string.
+  - **Mitigation**: there is no such known tool; the change is documented in the CHANGELOG entry shipped with this commit.
 
 ---
 
 ### Phase 4: Speedup — render/OCR overlap and benchmark
-**Dependencies**: Phase 1
+**Dependencies**: Phase 1, Phase 2
 
 #### Objectives
 - Ship the spec's non-optional speedup lever: page N + 1 is rasterized while page N is in OCR.
@@ -207,8 +216,8 @@ Revert the commit. The `--docx` flag is purely additive; removing it does not af
 - [ ] `pipeline.transcribe()` rewritten around an `asyncio.Queue(maxsize=4)` of pre-rasterized pages; rasterization runs in `asyncio.to_thread` (pdfium2 releases the GIL, so threads are real parallelism for the CPU-side rendering).
 - [ ] OCR consumer task pulls from the queue and runs the existing OCR adapter call inside `asyncio.to_thread` — every blocking inference call lives off the asyncio event loop, satisfying the spec's ASGI mandate ahead of Phase 5.
 - [ ] CLI keeps its synchronous-looking surface; under the hood it runs an asyncio loop.
-- [ ] Benchmark harness `scripts/benchmark.py` (or `pytest tests/benchmark/test_speedup.py` if pytest-benchmark fits cleanly) runs the current CLI baseline (pre-Phase-1) vs the new pipeline on `tests/fixtures/pdfs/reference.pdf`, three runs each, reports median wall-clock and the reduction ratio.
-- [ ] CI gate: median reduction must be ≥ 30 percent on the documented hardware baseline. If the gate runs on machines that don't match the baseline (e.g. CPU-only CI), the gate is informational, not blocking, and the binding measurement is run locally during release.
+- [ ] Benchmark harness `scripts/benchmark.py` runs the new pipeline on `tests/fixtures/pdfs/reference.pdf`, three runs, reports median wall-clock, and compares against the **frozen pre-refactor baseline** committed in Phase 1 at `tests/fixtures/benchmarks/baseline.json`. The baseline is never re-measured here; the comparison is reproducible against a fixed reference value.
+- [ ] CI gate: median reduction must be ≥ 30 percent against the frozen baseline on machines whose hardware metadata matches the baseline's `hardware` block. If the gate runs on a different machine class (e.g. CPU-only CI runners), the gate is informational, not blocking, and the binding measurement is captured locally during release with the same harness.
 - [ ] Brief note in the commit's body recording the measured reduction.
 
 #### Implementation Details
@@ -251,7 +260,7 @@ Revert. The async pipeline replaces the synchronous one; reverting restores Phas
 #### Deliverables
 - [ ] New package `arabic_pdf_transcribe.service` containing:
   - `app.py` — FastAPI application factory.
-  - `routes/jobs.py` — POST /jobs, GET /jobs/{id}, GET /jobs/{id}/events, GET /jobs/{id}/pages/{n}/image, GET /jobs/{id}/pages/{n}/markdown, GET /jobs/{id}/result.md, GET /jobs/{id}/result.docx, POST /jobs/{id}/cancel, DELETE /jobs/{id}.
+  - `routes/jobs.py` — POST /jobs, GET /jobs/{id}, GET /jobs/{id}/events, GET /jobs/{id}/pages/{n}/image, GET /jobs/{id}/pages/{n}/markdown, GET /jobs/{id}/result.md, GET /jobs/{id}/result.docx (lazy-built on first request via the Phase-3 `emit_docx_pages` function, cached as `<job_dir>/result.docx`, failures not cached), POST /jobs/{id}/cancel, DELETE /jobs/{id} (cancels in-flight work, removes the entire job directory from disk, returns 200 idempotently).
   - `routes/health.py` — GET /healthz.
   - `single_job.py` — an `asyncio.Lock`-style guard that returns 409 when a second submission arrives while a job is in flight.
   - `sse.py` — SSE helper backed by `events.jsonl` (replays from `Last-Event-ID`).
@@ -301,7 +310,8 @@ Revert. The service package is additive; the CLI continues to work without it.
 - Be the same artifact the Electron shell will load in Phase 7.
 
 #### Deliverables
-- [ ] New `frontend/` directory with a fresh SvelteKit project using the static adapter, `vite` for dev, and `pnpm` (or `npm`) for package management — the project picks the same toolchain the rest of the JS code in this repo already uses.
+- [ ] New `frontend/` directory with a fresh SvelteKit project using the static adapter, `vite` for dev, and `npm` for package management.
+- [ ] **SPA distribution decision** (resolves the spec's Open Question on this): the built SPA artifact lives at `frontend/build/` and **is checked into the repository** as a release-time artifact (committed at the end of Phase 6 and refreshed in subsequent Phase-6-touching commits). Rationale: the spec's audience is developers / advanced users with source installs; a checked-in build means a Python-only install of the package can serve the SPA without a Node toolchain on the runtime machine. The `frontend/` source remains the canonical thing developers edit; CI verifies that the committed `build/` matches a fresh `npm run build`. This decision is documented in the `frontend/README.md`.
 - [ ] Pages:
   - `/` — Submit form with file picker + drag-drop, backend selectors (layout dropdown, OCR dropdown), pages input, strict toggle. POSTs to `/jobs`, navigates to `/jobs/{id}`.
   - `/jobs/[id]` — Top bar with progress (current/total, percentage, smoothed ETA based on a moving median of the last 5 pages), Cancel button. Below: vertical strip of page rows.
@@ -329,7 +339,7 @@ Revert. The service package is additive; the CLI continues to work without it.
 #### Acceptance Criteria
 - [ ] Submitting the reference fixture from `/` lands on `/jobs/{id}` and shows the first page row within ≤ 5 seconds (warm process).
 - [ ] Subsequent pages stream in as additional rows without a full document re-render.
-- [ ] Submitting a 100-page synthetic fixture stays interactive (frame budget green; the metric and instrument are pinned during the work and reported in the commit body).
+- [ ] Submitting a 100-page synthetic fixture stays interactive — measured by a Playwright performance trace under `tests/e2e/test_long_doc_perf.py`. Pinned acceptance threshold: **total long-task time during the first 60 seconds of streaming is below 2 seconds aggregate** (browser long-task = main-thread block ≥ 50 ms). The Playwright test captures the trace and asserts the threshold; the captured trace is uploaded as a CI artifact for inspection.
 - [ ] Cancel + Resume + Delete actions match the spec's state-machine rules end-to-end (driven through the UI).
 - [ ] Markdown and docx download buttons appear after `pipeline_done` and produce the same files the CLI produces.
 - [ ] `npm run build` produces a static `frontend/build/` directory; serving it from the FastAPI route does not require Node.
@@ -439,16 +449,19 @@ Documentation-only revert is safe; no functional impact.
 ## Dependency Map
 
 ```
-Phase 1 ─┬─▶ Phase 2 ─┬─▶ Phase 5 ─┬─▶ Phase 6 ─▶ Phase 7 ─▶ Phase 8
-         │            │            │
-         ├─▶ Phase 3 ─┘            │
-         │                         │
-         └─▶ Phase 4 ──────────────┘
+Phase 1 ──▶ Phase 2 ──┬──▶ Phase 3 ──┐
+                      │              │
+                      └──▶ Phase 4 ──┴──▶ Phase 5 ──▶ Phase 6 ──▶ Phase 7 ──▶ Phase 8
 ```
 
-Phase 3 (docx) depends only on Phase 1's per-page Markdown writer. Phase 4 (speedup) depends only on Phase 1's pipeline shape. Phase 5 (service) depends on Phase 1, the state machine from Phase 2, and the off-loop pipeline from Phase 4. Phases 6 and 7 are sequential after Phase 5. Phase 8 is the final wrap.
+- **Phase 1** is the foundation: engine refactor, per-page artifacts, reference fixture, frozen baseline, `clean` command. No upstream dependency.
+- **Phase 2** depends on Phase 1: it adds the state machine, cancel/resume, and the canonical-normalization equivalence harness on top of Phase 1's per-page artifacts.
+- **Phase 3 (docx)** depends on Phase 2: its acceptance criteria reference the reference fixture's expected output (committed in Phase 1, but the equivalence-style assertions and the resume-with-docx scenarios require Phase 2's harness and resume primitive).
+- **Phase 4 (speedup)** depends on Phase 2: the benchmark runs against the reference fixture and gates on equivalence staying green, both of which arrive in Phase 2.
+- **Phase 5 (service)** depends on Phase 4 (off-loop pipeline) and Phase 3 (docx function used by `GET /result.docx`).
+- **Phases 6, 7, 8** are sequential after Phase 5.
 
-Phase 3 and Phase 4 are independent and can be reordered if practical reasons emerge during implementation; the plan keeps the docx-first order to honor the user's stated priority.
+Phase 3 and Phase 4 can be implemented in either order after Phase 2; this plan keeps the docx-first order to honor the user's stated priority.
 
 ## Resource Requirements
 
@@ -518,10 +531,28 @@ This is a local-first project with no production deployment, so traditional metr
 
 ## Expert Review
 
-**Date**: pending
-**Models Consulted**: pending — to be filled after the multi-agent review pass.
-**Key Feedback**: pending.
-**Plan Adjustments**: pending.
+**Date**: 2026-05-03
+**Models Consulted**: Gemini 3 Flash Preview, Claude Opus. (Codex unavailable until 2026-05-08 due to a usage limit; the user accepted this substitution as in the spec phase.)
+
+**Key Feedback**:
+
+- **Gemini 3 Flash Preview — APPROVE (HIGH)**: plan is well-decomposed, dependencies are clear, performance gate has a concrete escape hatch. Single minor note: persist event `id` in `events.jsonl` to support `Last-Event-ID` SSE replay in Phase 5 — the plan now explicitly mandates this in Phase 1's `EventEmitter` deliverable.
+- **Claude Opus — REQUEST_CHANGES (HIGH)**: found six structural issues and two minor ones, summarized below; all addressed.
+
+**Plan Adjustments**:
+
+1. **Phase 3 was reinventing an existing module.** The codebase already has `src/arabic_pdf_transcribe/emit/docx.py` (Region-based, deterministic, lazy `python-docx` import, wired to the CLI's existing `--format docx` flag). The original Phase 3 proposed a Markdown→docx parser using `markdown-it-py` and a redundant `--docx` CLI flag. Phase 3 is now an **extension** of the existing emitter: it adds page-grouped input, hard page breaks between pages, paragraph-level `<w:bidi/>`, and the `[Figure: page N, region M]` placeholder. No new Markdown parser, no new dependency, no new CLI flag.
+2. **Dependency map was wrong.** The original map showed Phase 3 and Phase 4 depending only on Phase 1, but their acceptance criteria use the equivalence harness and the resume primitive from Phase 2. Map corrected so Phase 2 is on the critical path for everything; Phase 3 and Phase 4 both depend on Phase 2 and remain independent of each other.
+3. **Job-cleanup command was orphaned.** The spec mandates a documented cleanup command, but no phase implemented one. Phase 1 now ships `arabic-pdf-transcribe clean [--older-than DAYS] [--all]`, alongside the directory layout it cleans.
+4. **SPA distribution question was unanswered.** The spec asked the plan to pick a distribution strategy. Phase 6 now explicitly commits to checked-in `frontend/build/` artifacts so a Python-only install can serve the SPA without a Node runtime; CI verifies that the committed build matches a fresh `npm run build`.
+5. **Phase 1 acceptance criterion referenced a fixture that did not exist yet.** The reference fixture and expected output were originally scheduled to land in Phase 2; Phase 1's AC needed them. Both fixture and expected output now ship in Phase 1.
+6. **Phase 4 baseline methodology was ambiguous.** "Pre-Phase-1 baseline" is now a frozen artifact (`tests/fixtures/benchmarks/baseline.json`) committed as part of Phase 1, captured by running the previous CLI in a temporary git worktree of the parent commit. Phase 4 measures against this fixed value.
+7. **DELETE /jobs/{id} disk semantics were unspecified.** Phase 5 now explicitly states the route cancels in-flight work, removes the entire job directory from disk, and is idempotent.
+8. **Service-side lazy docx vs CLI-side eager docx.** Phase 3 now states both invocations call into the same pure function; the service caches its lazy build inside the job directory; failures are not cached.
+9. **Frame-budget metric was deferred to implementation time.** Phase 6 now pins the threshold (total long-task time below 2 seconds aggregate during the first 60 seconds of a 100-page synthetic stream), the instrument (Playwright performance trace), and the test path (`tests/e2e/test_long_doc_perf.py`).
+10. **CLI tier-1 input validation discipline.** Phase 1 now explicitly applies tier-1 checks (writable `-o`, valid PDF, valid `--pages`, supported backend pair) synchronously before any model load, with a matching acceptance criterion.
+
+The Phase-1 acceptance criterion for output equivalence is now a smoke-test (run the new CLI on the reference fixture and compare normalized) — the full equivalence harness with `assert_markdown_equivalent` lands in Phase 2.
 
 ## Approval
 - [ ] Technical Lead Review
@@ -533,6 +564,7 @@ This is a local-first project with no production deployment, so traditional metr
 | Date | Change | Reason | Author |
 |------|--------|--------|--------|
 | 2026-05-03 | Initial plan draft | SPIR Plan phase first artifact | repo owner via Claude |
+| 2026-05-03 | Plan with multi-agent review (Gemini APPROVE, Claude REQUEST_CHANGES) | Address dependency-map errors, existing docx-emitter reuse, missing clean command, SPA distribution decision, Phase-1 fixture commit, baseline methodology, frame-budget metric | repo owner via Claude |
 
 ## Notes
 
