@@ -1,0 +1,12 @@
+id: bugfix-20
+title: gpu-oom-on-6gb-cards-layout-oc
+protocol: bugfix
+phase: investigate
+plan_phases: []
+current_plan_phase: null
+gates: {}
+iteration: 1
+build_complete: false
+history: []
+started_at: '2026-05-03T00:48:34.170Z'
+updated_at: '2026-05-03T00:48:34.170Z'
