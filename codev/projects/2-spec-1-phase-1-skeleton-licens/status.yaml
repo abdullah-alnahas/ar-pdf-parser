@@ -1,7 +1,7 @@
 id: '2'
 title: spec-1-phase-1-skeleton-licens
 protocol: spir
-phase: specify
+phase: plan
 plan_phases: []
 current_plan_phase: null
 gates:
@@ -16,7 +16,7 @@ gates:
   verify-approval:
     status: pending
 iteration: 1
-build_complete: true
+build_complete: false
 history: []
 started_at: '2026-05-03T15:52:36.342Z'
-updated_at: '2026-05-03T16:01:01.058Z'
+updated_at: '2026-05-03T16:01:20.056Z'
