@@ -134,11 +134,14 @@ def test_default_config_pins_apache_licensed_got_ocr() -> None:
     assert cfg.do_sample is False
     assert cfg.num_beams == 1
     # Issue #18 lowered the default from 4096 to 1024 to bound CPU
-    # runaway generation; still > 3× a typical Arabic paragraph.
-    assert cfg.max_new_tokens == 1024
+    # runaway generation; issue #20 lowered it again to 512 to keep
+    # per-region peak VRAM within 6 GB. Still ~5× a typical Arabic
+    # paragraph's tokenisation.
+    assert cfg.max_new_tokens == 512
     assert cfg.no_repeat_ngram_size == 3
     assert cfg.repetition_penalty == 1.05
     assert cfg.device == "auto"
+    assert cfg.dtype == "auto"
 
 
 def test_transcriber_satisfies_protocol() -> None:

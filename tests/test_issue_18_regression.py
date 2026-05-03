@@ -45,11 +45,15 @@ from arabic_pdf_transcribe.ocr.hf_ocr import (
 # ---------------------------------------------------------------------------
 
 
-def test_max_new_tokens_default_lowered_to_1024() -> None:
-    """RC#3: 4096 → 1024 prevents 30-60 min/region runaway loops on CPU."""
+def test_max_new_tokens_default_below_runaway_threshold() -> None:
+    """RC#3: 4096 → 1024 prevented 30-60 min/region runaway loops on CPU.
+    Issue #20 RC#4 lowered the default further (1024 → 512) to bound
+    per-region peak VRAM on 6 GB cards. The original RC#3 acceptance
+    just requires the bound stay well below the 4096 runaway ceiling."""
     cfg = OCRConfig()
-    assert cfg.max_new_tokens == 1024
-    assert DEFAULT_MAX_NEW_TOKENS == 1024
+    assert cfg.max_new_tokens <= 1024
+    assert DEFAULT_MAX_NEW_TOKENS <= 1024
+    assert cfg.max_new_tokens == DEFAULT_MAX_NEW_TOKENS
 
 
 def test_repetition_controls_have_safe_defaults() -> None:
@@ -88,7 +92,7 @@ def test_repetition_controls_passed_to_generate() -> None:
     image = Image.new("RGB", (50, 50), color=(255, 255, 255))
     transcriber._transcribe_image(image)
 
-    assert captured["max_new_tokens"] == 1024
+    assert captured["max_new_tokens"] == DEFAULT_MAX_NEW_TOKENS
     assert captured["no_repeat_ngram_size"] == 3
     assert captured["repetition_penalty"] == pytest.approx(1.05)
 

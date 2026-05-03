@@ -154,6 +154,18 @@ def build_parser() -> argparse.ArgumentParser:
             "[runtime].device in the config file."
         ),
     )
+    parser.add_argument(
+        "--dtype",
+        choices=("auto", "float32", "float16", "bfloat16"),
+        default=None,
+        help=(
+            "ML model precision: 'auto' (default; bf16 on Ampere+ CUDA, "
+            "fp16 on older CUDA, fp32 on CPU), 'float32', 'float16', or "
+            "'bfloat16'. fp16/bf16 halve VRAM use vs fp32 with negligible "
+            "OCR quality loss; required for 6 GB GPUs. Overrides "
+            "[layout].dtype / [ocr].dtype in the config file."
+        ),
+    )
     return parser
 
 
@@ -172,6 +184,7 @@ class ValidatedArgs:
     max_workers: int  # resolved from "auto" / int
     dpi: int
     device: str | None  # "auto" | "cuda" | "cpu" | None (use TOML / default)
+    dtype: str | None  # "auto" | "float32" | "float16" | "bfloat16" | None
 
 
 def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
@@ -203,6 +216,7 @@ def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
         max_workers=max_workers,
         dpi=dpi,
         device=ns.device,
+        dtype=ns.dtype,
     )
 
 
@@ -323,8 +337,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     config_doc = _load_config_doc(args.config)
     validator_cfg = _validator_cfg_from_doc(config_doc)
     device, device_is_cli_override = _resolve_device(args.device, config_doc)
+    dtype, dtype_is_cli_override = _resolve_dtype(args.dtype, config_doc)
     layout_detector, ocr_transcriber = _maybe_build_ml_adapters(
-        config_doc, device=device, force_device=device_is_cli_override
+        config_doc,
+        device=device,
+        force_device=device_is_cli_override,
+        dtype=dtype,
+        force_dtype=dtype_is_cli_override,
     )
     dpi = _resolve_dpi(args.dpi, config_doc)
 
@@ -466,6 +485,27 @@ def _resolve_device(cli_device: str | None, doc: dict[str, object]) -> tuple[str
     return "auto", False
 
 
+def _resolve_dtype(cli_dtype: str | None, doc: dict[str, object]) -> tuple[str, bool]:
+    """Resolve the ML dtype and whether the CLI explicitly set it.
+
+    Mirrors :func:`_resolve_device`: ``--dtype`` wins over
+    ``[runtime].dtype`` over ``"auto"``. ``cli_override=True`` means
+    per-section ``[layout].dtype`` / ``[ocr].dtype`` MUST be replaced.
+
+    Issue #20 RC#1: gives the user a knob to force fp16 / bf16 for
+    6 GB GPUs, or to force fp32 when reduced precision degrades a
+    specific corpus.
+    """
+    if cli_dtype is not None:
+        return cli_dtype, True
+    section = doc.get("runtime")
+    if isinstance(section, dict):
+        value = section.get("dtype")
+        if isinstance(value, str) and value:
+            return value, False
+    return "auto", False
+
+
 def _prefetch_models(config_doc: dict[str, object]) -> int:
     """Download layout + OCR weights into the HF cache and return an exit code.
 
@@ -529,6 +569,8 @@ def _maybe_build_ml_adapters(
     *,
     device: str | None = None,
     force_device: bool = False,
+    dtype: str | None = None,
+    force_dtype: bool = False,
 ) -> tuple[object | None, object | None]:
     """Return ``(layout_detector, ocr_transcriber)`` or ``(None, None)``.
 
@@ -568,6 +610,20 @@ def _maybe_build_ml_adapters(
         ocr_has_device = isinstance(ocr_section, dict) and "device" in ocr_section
         if force_device or not ocr_has_device:
             ocr_cfg = replace(ocr_cfg, device=device)
+    if dtype is not None:
+        from dataclasses import replace
+
+        # Same precedence as ``device``: ``--dtype`` (force_dtype=True)
+        # overrides per-section ``[layout].dtype`` / ``[ocr].dtype``;
+        # otherwise the more specific per-section value wins.
+        layout_section = (doc or {}).get("layout")
+        layout_has_dtype = isinstance(layout_section, dict) and "dtype" in layout_section
+        if force_dtype or not layout_has_dtype:
+            layout_cfg = replace(layout_cfg, dtype=dtype)
+        ocr_section = (doc or {}).get("ocr")
+        ocr_has_dtype = isinstance(ocr_section, dict) and "dtype" in ocr_section
+        if force_dtype or not ocr_has_dtype:
+            ocr_cfg = replace(ocr_cfg, dtype=dtype)
     try:
         return HFDiTLayoutDetector(layout_cfg), HFGotOCRTranscriber(ocr_cfg)
     except Exception:  # pragma: no cover — defensive; constructors are cheap

@@ -49,6 +49,7 @@ from arabic_pdf_transcribe._device import (
     move_inputs_to_device,
     place_model,
     resolve_device,
+    resolve_dtype,
 )
 from arabic_pdf_transcribe.errors import ModelDownloadError
 from arabic_pdf_transcribe.layout._classes import (
@@ -81,6 +82,7 @@ DEFAULT_REVISION = "1995237326c8b53d93525b7b19e20bb363b4eb73"
 DEFAULT_PIXEL_CONFIDENCE = 0.5
 DEFAULT_MIN_REGION_AREA_PX = 64
 DEFAULT_DEVICE = "auto"
+DEFAULT_DTYPE = "auto"
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,14 @@ class HFLayoutDetectorConfig:
     min_region_area_px: int = DEFAULT_MIN_REGION_AREA_PX
     detect_table_cells: bool = True
     device: str = DEFAULT_DEVICE
+    dtype: str = DEFAULT_DTYPE
+    # Issue #20 RC#2: when running on CUDA, move the layout model to
+    # CPU after every ``detect()`` so its ~330 MB weights + activation
+    # buffers stop competing with the OCR model for the same VRAM.
+    # The 50-100 MB ping-pong cost per page is dwarfed by the
+    # OOM-fallback-to-CPU cost the eviction prevents. CPU-only runs
+    # never evict (nothing to gain).
+    evict_after_inference: bool = True
 
     @classmethod
     def from_mapping(cls, mapping: object) -> HFLayoutDetectorConfig:
@@ -153,12 +163,19 @@ class HFDiTLayoutDetector:
                 f"install the [ml] extra: pip install 'arabic-pdf-transcribe[ml]'. "
                 f"({exc})"
             ) from exc
+        # Resolve target device first so dtype "auto" knows whether
+        # to pick bf16/fp16 (CUDA) or stay fp32 (CPU). Issue #20 RC#1.
+        self._device = resolve_device(self.config.device)
+        torch_dtype = resolve_dtype(self.config.dtype, self._device)
+        load_kwargs: dict[str, Any] = {"revision": self.config.revision}
+        if torch_dtype is not None:
+            load_kwargs["torch_dtype"] = torch_dtype
         try:
             self._processor = AutoImageProcessor.from_pretrained(
                 self.config.model, revision=self.config.revision
             )
             self._model = AutoModelForSemanticSegmentation.from_pretrained(
-                self.config.model, revision=self.config.revision
+                self.config.model, **load_kwargs
             )
         except Exception as exc:  # pragma: no cover — exercised in slow test
             raise ModelDownloadError(
@@ -173,7 +190,6 @@ class HFDiTLayoutDetector:
         # Issue #18 RC#1: place model on the resolved device. Without
         # this, the segmentation forward pass ran on CPU even when
         # CUDA was available — the same root cause as the OCR hang.
-        self._device = resolve_device(self.config.device)
         place_model(self._model, self._device)
 
     def detect(self, page_image: PILImage, page_index: int) -> Sequence[Region]:
@@ -189,6 +205,13 @@ class HFDiTLayoutDetector:
         # Local import — gated by ``[ml]`` extra.
         import torch
 
+        # Issue #20 RC#2: when eviction is on (CUDA only) the model
+        # may currently sit on CPU after the previous page; bring it
+        # back to the resolved CUDA device before this page's forward.
+        # ``.to`` is a no-op when the model is already on ``device``.
+        if self._should_evict() and self._device == "cuda":
+            with contextlib.suppress(Exception):
+                self._model.to("cuda")
         inputs = self._processor(images=page_image, return_tensors="pt")
         inputs = move_inputs_to_device(inputs, self._device or "cpu")
         try:
@@ -212,6 +235,12 @@ class HFDiTLayoutDetector:
         confidences, class_map = torch.max(probs, dim=1)  # (1, h, w) each
         confidence_grid = confidences[0].cpu().numpy()
         class_grid = class_map[0].cpu().numpy()
+        # Issue #20 RC#2: free the layout model's VRAM before OCR runs
+        # on this page. The OCR adapter then has the full GPU to itself.
+        if self._should_evict() and self._device == "cuda":
+            with contextlib.suppress(Exception):
+                self._model.to("cpu")
+                torch.cuda.empty_cache()
         # Resize per-pixel grids to match the input image so bboxes are
         # in input-image coordinates.
         return list(
@@ -222,6 +251,14 @@ class HFDiTLayoutDetector:
                 page_index=page_index,
             )
         )
+
+    def _should_evict(self) -> bool:
+        """Whether to ping-pong the layout model between CUDA and CPU.
+
+        Eviction only makes sense when there's GPU memory to free —
+        skip it on CPU-only runs.
+        """
+        return bool(self.config.evict_after_inference)
 
     def _regions_from_class_map(
         self,
