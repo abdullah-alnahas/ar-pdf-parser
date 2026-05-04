@@ -126,18 +126,26 @@ class TritonOCRTranscriber:
         import tritonclient.grpc as grpcclient  # type: ignore[import-not-found]
 
         client = self._get_client()
-        png_arr = np.array([_png_bytes(im) for im in images], dtype=object)
+        # Servers with max_batch_size>=1 (PyTriton, ensemble) expect a
+        # leading batch dim. Sending shape (1, N) works for both
+        # max_batch_size=0 (C++ Python backend) and max_batch_size=1
+        # (PyTriton): the server collapses the batch dim back when
+        # routing to the model. The N=images count is the per-request
+        # ragged dim.
+        png_arr = np.array([[_png_bytes(im) for im in images]], dtype=object)
 
-        in_img = grpcclient.InferInput("IMAGE_PNG", [len(images)], "BYTES")
+        in_img = grpcclient.InferInput("IMAGE_PNG", [1, len(images)], "BYTES")
         in_img.set_data_from_numpy(png_arr)
 
-        in_math = grpcclient.InferInput("MATH_MODE", [1], "BOOL")
-        in_math.set_data_from_numpy(np.array([not self._disable_formula], dtype=bool))
+        in_math = grpcclient.InferInput("MATH_MODE", [1, 1], "BOOL")
+        in_math.set_data_from_numpy(np.array([[not self._disable_formula]], dtype=bool))
 
         inputs = [in_img, in_math]
         if self._batch_size is not None:
-            in_bs = grpcclient.InferInput("RECOGNITION_BATCH_SIZE", [1], "INT32")
-            in_bs.set_data_from_numpy(np.array([int(self._batch_size)], dtype=np.int32))
+            in_bs = grpcclient.InferInput("RECOGNITION_BATCH_SIZE", [1, 1], "INT32")
+            in_bs.set_data_from_numpy(
+                np.array([[int(self._batch_size)]], dtype=np.int32)
+            )
             inputs.append(in_bs)
 
         out = grpcclient.InferRequestedOutput("TEXT")
@@ -155,6 +163,8 @@ class TritonOCRTranscriber:
         texts_arr = result.as_numpy("TEXT")
         if texts_arr is None:
             raise OCRTranscriptionError("triton response missing TEXT output")
+        # Flatten the leading batch dim (=1) added by max_batch_size>=1.
+        texts_arr = texts_arr.reshape(-1)
         out_texts: list[str] = []
         for entry in texts_arr:
             text = entry.decode("utf-8") if isinstance(entry, (bytes, bytearray)) else str(entry)

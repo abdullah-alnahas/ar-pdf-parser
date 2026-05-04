@@ -1,14 +1,13 @@
 name: "surya_ocr"
 backend: "python"
 
-# max_batch_size: 0 ⇒ each request carries its own variable-length list
-# of PNG byte arrays. We let surya batch *within* a request via its
-# internal recognition_batch_size, and we get *across-request*
-# parallelism from instance_group below (one CUDA stream per instance).
-# Cross-request dynamic batching is intentionally skipped — the surya
-# call dominates wall-time and ragged PNG inputs make ragged-batching
-# config painful for small wins.
-max_batch_size: 0
+# max_batch_size: 1 keeps a leading batch dim so the same client wire
+# format works against PyTriton (which requires max_batch_size>=1) and
+# this C++ Python-backend config. Cross-request batching is still
+# disabled in practice — the model only ever sees batch=1; concurrency
+# comes from instance_group below (one CUDA stream per instance) and
+# within a request surya batches via recognition_batch_size.
+max_batch_size: 1
 
 input [
   {

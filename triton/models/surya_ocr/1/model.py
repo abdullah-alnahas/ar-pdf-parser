@@ -69,8 +69,8 @@ class TritonPythonModel:
         png_tensor = pb_utils.get_input_tensor_by_name(request, "IMAGE_PNG")
         if png_tensor is None:
             raise ValueError("missing IMAGE_PNG input")
-        png_bytes = png_tensor.as_numpy()
-        # ``as_numpy()`` for TYPE_STRING returns object dtype with bytes/str.
+        # max_batch_size=1 ⇒ shape (1, N); flatten to 1-D N images.
+        png_bytes = png_tensor.as_numpy().reshape(-1)
         images: list[Image.Image] = []
         for entry in png_bytes:
             buf = entry if isinstance(entry, (bytes, bytearray)) else entry.encode("latin-1")
@@ -79,12 +79,12 @@ class TritonPythonModel:
         math_mode = True
         math_tensor = pb_utils.get_input_tensor_by_name(request, "MATH_MODE")
         if math_tensor is not None:
-            math_mode = bool(math_tensor.as_numpy()[0])
+            math_mode = bool(math_tensor.as_numpy().reshape(-1)[0])
 
         kwargs: dict = {"det_predictor": self.det, "math_mode": math_mode}
         bs_tensor = pb_utils.get_input_tensor_by_name(request, "RECOGNITION_BATCH_SIZE")
         if bs_tensor is not None:
-            bs = int(bs_tensor.as_numpy()[0])
+            bs = int(bs_tensor.as_numpy().reshape(-1)[0])
             if bs > 0:
                 kwargs["recognition_batch_size"] = bs
                 kwargs["detection_batch_size"] = bs
@@ -95,7 +95,8 @@ class TritonPythonModel:
             results = self.rec(images, **kwargs)
             texts = ["\n".join(line.text for line in r.text_lines) for r in results]
 
-        out_arr = np.array(texts, dtype=object)
+        # max_batch_size=1 ⇒ output keeps a leading batch dim of 1.
+        out_arr = np.array([texts], dtype=object)
         out_tensor = pb_utils.Tensor("TEXT", out_arr)
         return pb_utils.InferenceResponse(output_tensors=[out_tensor])
 

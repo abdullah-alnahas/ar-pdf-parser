@@ -161,16 +161,13 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
     try:
-        from pytriton.decorators import batch
-        from pytriton.model_config import DynamicBatcher, ModelConfig, Tensor
+        from pytriton.model_config import ModelConfig, Tensor
         from pytriton.triton import Triton, TritonConfig
     except ImportError:
         sys.stderr.write(
             "error: pytriton is not installed; run: pip install nvidia-pytriton\n"
         )
         return 2
-
-    del batch  # only used if we wanted decorator-style infer_fn
 
     logger.info("loading surya predictors (one set per instance)…")
     # PyTriton spawns the infer_fn in this process; instance_count
@@ -206,12 +203,13 @@ def main(argv: list[str] | None = None) -> int:
                 Tensor(name="TEXT", dtype=bytes, shape=(-1,)),
             ],
             config=ModelConfig(
-                # max_batch_size=0 ⇒ each request stands alone (matches
-                # the C++ Python-backend config). Cross-request
-                # parallelism comes from instance_count below; within a
-                # request, surya batches via recognition_batch_size.
-                max_batch_size=0,
-                batcher=DynamicBatcher(),  # no-op when max_batch_size=0
+                # PyTriton requires max_batch_size>=1. Each client
+                # request already carries N images in IMAGE_PNG, so
+                # cross-request batching is unnecessary; we set
+                # max_batch_size=1 and let surya batch *within* a
+                # request via recognition_batch_size. Cross-request
+                # parallelism comes from --instances.
+                max_batch_size=1,
             ),
             strict=True,
         )
