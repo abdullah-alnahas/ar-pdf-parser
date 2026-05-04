@@ -250,6 +250,12 @@ def transcribe(
         # extraction fires before any phase work begins.
         native_pages = list(extract_native_from_document(document, pages=selected))
 
+        # Phase header events let renderers (rich progress bars) re-target
+        # their per-phase task with the correct total before any work in
+        # that phase fires. Format: ``phase:start:<name>:<count>``. Page
+        # index is 0 (placeholder — phase events are not page-scoped).
+        _emit_progress(progress, 0, total, f"phase:start:validate:{len(native_pages)}")
+
         # ----- Phase A: validate every page (native-accept inline, else queue ML)
         outcomes: dict[int, PageOutcome] = {}
         ml_jobs: list[_MLJob] = []
@@ -271,6 +277,8 @@ def transcribe(
                 ml_jobs.append(outcome_or_job)
 
         if ml_jobs:
+            m = len(ml_jobs)
+            _emit_progress(progress, 0, total, f"phase:start:rasterise:{m}")
             # ----- Phase B: rasterise all ML pages (parallel; doc_lock-serialised)
             page_images = _run_rasterise_phase(
                 ml_jobs=ml_jobs,
@@ -283,6 +291,7 @@ def transcribe(
                 outcomes=outcomes,
             )
 
+            _emit_progress(progress, 0, total, f"phase:start:layout:{m}")
             # ----- Phase C: layout sequentially across all ML pages
             page_regions = _run_layout_phase(
                 ml_jobs=ml_jobs,
@@ -295,6 +304,7 @@ def transcribe(
                 outcomes=outcomes,
             )
 
+            _emit_progress(progress, 0, total, f"phase:start:ocr:{m}")
             # ----- Phase D: OCR sequentially across all ML pages
             _run_ocr_phase(
                 ml_jobs=ml_jobs,

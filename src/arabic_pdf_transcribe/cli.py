@@ -357,6 +357,100 @@ def _resolve_progress_mode(*, quiet: bool, json_logs: bool) -> ProgressMode:
     return ProgressMode.TEXT
 
 
+class _ProgressUI:
+    """Unified progress observer used by :func:`main`.
+
+    On a TTY in default TEXT mode, builds a two-bar live display via
+    :mod:`arabic_pdf_transcribe._progress_ui`. Otherwise falls back to
+    the line-format :class:`ProgressLogger` so piped stderr, ``--quiet``,
+    and ``--json-logs`` keep their byte-stable behaviour. The rich UI is
+    constructed lazily on the first event so we know the document's
+    total page count before drawing.
+    """
+
+    def __init__(self, mode: ProgressMode, stream: TextIO) -> None:
+        self._mode = mode
+        self._stream = stream
+        self._use_rich = mode is ProgressMode.TEXT and _stream_is_tty(stream)
+        self._rich = None  # type: ignore[var-annotated]
+        self._logger: ProgressLogger | None = (
+            None if self._use_rich else ProgressLogger(mode, stream=stream)
+        )
+
+    def on_event(self, page_index: int, total: int, event: str) -> None:
+        if self._use_rich:
+            if self._rich is None:
+                from arabic_pdf_transcribe._progress_ui import RichTwoBarUI
+
+                self._rich = RichTwoBarUI(total_pages=total, stream=self._stream)
+            self._rich.handle_event(page_index, total, event)
+            return
+        self._dispatch_to_logger(page_index, total, event)
+
+    def summary(self, *, of: int, ok_pages: int, failed_pages: int) -> None:
+        if self._use_rich and self._rich is not None:
+            self._rich.write_summary(
+                f"summary: {of} pages, ok={ok_pages} failed={failed_pages}"
+            )
+            return
+        if self._logger is not None:
+            self._logger.summary(of=of, ok_pages=ok_pages, failed_pages=failed_pages)
+
+    def close(self) -> None:
+        if self._rich is not None:
+            self._rich.close()
+
+    # ------------------------------------------------------------------
+    # Line-logger dispatch (mirrors the previous inline ``_progress`` fn).
+    # ------------------------------------------------------------------
+
+    def _dispatch_to_logger(self, page_index: int, total: int, event: str) -> None:
+        if self._logger is None:  # pragma: no cover — defensive
+            return
+        # Phase header events are rich-only; the line logger ignores them.
+        if event.startswith("phase:start:"):
+            return
+        page = page_index + 1
+        if event == "start":
+            self._logger.start(page=page, of=total)
+        elif event == "layout":
+            self._logger.layout(page=page, of=total)
+        elif event == "rasterise":
+            # The line logger has no dedicated rasterise renderer; fold
+            # it into the layout-style "ml step" line.
+            return
+        elif event.startswith("region:"):
+            payload = event.split(":", 2)[1:]  # ["i/n", "role"]
+            if len(payload) == 2 and "/" in payload[0]:
+                idx_s, n_s = payload[0].split("/", 1)
+                try:
+                    idx = int(idx_s)
+                    n_regions = int(n_s)
+                except ValueError:  # pragma: no cover — defensive
+                    return
+                self._logger.region(
+                    page=page,
+                    of=total,
+                    region=idx,
+                    of_regions=n_regions,
+                    role=payload[1],
+                )
+        elif event.startswith("complete:"):
+            branch = event.split(":", 1)[1]
+            self._logger.complete(page=page, of=total, branch=branch)
+        elif event.startswith("failure:"):
+            reason = event.split(":", 1)[1]
+            self._logger.failure(page=page, of=total, reason=reason)
+
+
+def _stream_is_tty(stream: TextIO) -> bool:
+    """Best-effort isatty check; returns ``False`` on broken streams."""
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, ValueError, OSError):  # pragma: no cover — defensive
+        return False
+
+
 def _resolve_max_workers(value: str) -> int:
     if value == "auto":
         try:
@@ -401,7 +495,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_RUNTIME
 
-    logger = ProgressLogger(args.progress_mode, stream=sys.stderr)
+    ui = _ProgressUI(args.progress_mode, sys.stderr)
 
     config_doc = _load_config_doc(args.config)
     validator_cfg = _validator_cfg_from_doc(config_doc)
@@ -418,48 +512,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     dpi = _resolve_dpi(args.dpi, config_doc)
 
-    def _progress(page_index: int, total: int, event: str) -> None:
-        page = page_index + 1
-        if event == "start":
-            logger.start(page=page, of=total)
-        elif event == "layout":
-            logger.layout(page=page, of=total)
-        elif event.startswith("region:"):
-            # ``region:{idx}/{n}:{role}`` — see pipeline._run_ml_branch.
-            payload = event.split(":", 2)[1:]  # ["i/n", "role"]
-            if len(payload) == 2 and "/" in payload[0]:
-                idx_s, n_s = payload[0].split("/", 1)
-                try:
-                    idx = int(idx_s)
-                    n_regions = int(n_s)
-                except ValueError:  # pragma: no cover — defensive
-                    return
-                logger.region(
-                    page=page,
-                    of=total,
-                    region=idx,
-                    of_regions=n_regions,
-                    role=payload[1],
-                )
-        elif event.startswith("complete:"):
-            branch = event.split(":", 1)[1]
-            logger.complete(page=page, of=total, branch=branch)
-        elif event.startswith("failure:"):
-            reason = event.split(":", 1)[1]
-            logger.failure(page=page, of=total, reason=reason)
-
     try:
-        result = transcribe(
-            args.input,
-            layout_detector=layout_detector,
-            ocr_transcriber=ocr_transcriber,
-            validator_config=validator_cfg,
-            pages=args.pages,
-            strict=args.strict,
-            dpi=dpi,
-            max_workers=args.max_workers,
-            progress=_progress,
-        )
+        try:
+            result = transcribe(
+                args.input,
+                layout_detector=layout_detector,
+                ocr_transcriber=ocr_transcriber,
+                validator_config=validator_cfg,
+                pages=args.pages,
+                strict=args.strict,
+                dpi=dpi,
+                max_workers=args.max_workers,
+                progress=ui.on_event,
+            )
+        finally:
+            # Tear down any rich Live display before error messages
+            # below (or the summary print) reach stderr — otherwise the
+            # bars overwrite the message.
+            ui.close()
     except FileNotFoundError as exc:
         print(f"error: input file not found: {exc.filename or args.input}", file=sys.stderr)
         return EXIT_CORRUPTED_OR_FORMAT
@@ -483,7 +553,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_RUNTIME
 
-    logger.summary(of=result.n_pages, ok_pages=result.ok_pages, failed_pages=result.failed_pages)
+    ui.summary(of=result.n_pages, ok_pages=result.ok_pages, failed_pages=result.failed_pages)
 
     if result.all_failed and result.n_pages > 0:
         print("error: every page failed; nothing to write", file=sys.stderr)

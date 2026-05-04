@@ -28,6 +28,11 @@ classifiers = [
 dependencies = [
     "pypdfium2==4.30.0",
     "python-docx==1.1.2",
+    # ``rich`` powers the TTY two-bar progress UI (overall + current
+    # phase, with ETA). Falls back to the line-format logger when stderr
+    # is piped or ``--quiet`` / ``--json-logs`` is used, so headless
+    # invocations don't depend on rich's behaviour.
+    "rich>=13.7.0",
 ]
 
 [project.optional-dependencies]
