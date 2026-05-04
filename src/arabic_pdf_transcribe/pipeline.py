@@ -303,6 +303,14 @@ def transcribe(
                 progress=progress,
                 outcomes=outcomes,
             )
+            # Sequential actor lifecycle: the layout adapter is no
+            # longer needed; releasing it frees its VRAM (Ray actor
+            # mode kills the worker process, tearing down the CUDA
+            # context) before Phase D loads the OCR model. On 6 GB
+            # GPUs this is what keeps Phase D out of OOM territory.
+            # No-op for in-process adapters that don't expose
+            # ``release()``.
+            _release_adapter(layout_detector)
 
             _emit_progress(progress, 0, total, f"phase:start:ocr:{m}")
             # ----- Phase D: OCR sequentially across all ML pages
@@ -319,6 +327,7 @@ def transcribe(
                 progress=progress,
                 outcomes=outcomes,
             )
+            _release_adapter(ocr_transcriber)
 
     # Phase E (stitch): assemble in source-page order.
     pages_out = [outcomes[np.page_index] for np in native_pages]
@@ -552,7 +561,7 @@ def _run_ocr_phase(
         detected = page_regions[page_index]
         try:
             if callable(page_batch):
-                transcribed = list(page_batch(detected, image))
+                transcribed = list(page_batch(detected, image))  # type: ignore[arg-type]
             else:
                 transcribed = []
                 for region in detected:
@@ -656,6 +665,28 @@ def _handle_phase_exc(
     # Non-Exception BaseException (KeyboardInterrupt, SystemExit, etc.):
     # never swallow.
     raise exc
+
+
+def _release_adapter(adapter: object | None) -> None:
+    """Call an adapter's ``release()`` if it exposes one.
+
+    The Ray-actor proxies (:class:`RayLayoutProxy`, :class:`RayOCRProxy`)
+    use ``release()`` to ``ray.kill`` their worker process between
+    phases — this is what frees GPU memory on a 6 GB card so Phase D
+    isn't squeezed by Phase C's leftover CUDA context. In-process
+    adapters (thread mode) don't ship a ``release()`` and this is a
+    no-op for them; ``hasattr`` keeps the orchestrator agnostic to
+    the executor mode.
+
+    Errors raised by the hook are swallowed: a failed teardown must
+    not abort an otherwise successful run.
+    """
+    release = getattr(adapter, "release", None)
+    if callable(release):
+        try:
+            release()
+        except Exception:  # pragma: no cover — best-effort teardown
+            pass
 
 
 def _is_cuda_oom(exc: BaseException) -> bool:

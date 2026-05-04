@@ -64,6 +64,47 @@ def _strip_math(text: str) -> str:
     return text
 
 
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """Recognise ``torch.OutOfMemoryError`` without importing torch.
+
+    Walks the ``__cause__`` / ``__context__`` chain so a wrapped OOM
+    (which is what we get when the inner ``rec(...)`` raises and surya
+    re-throws) is still detected.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        cls = type(current)
+        if cls.__name__ == "OutOfMemoryError" and (cls.__module__ or "").startswith("torch"):
+            return True
+        # ``CUDA out of memory`` is the exact phrase emitted by torch's
+        # allocator; surya wraps it inside RuntimeError on some paths.
+        if isinstance(current, RuntimeError) and "CUDA out of memory" in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _release_cuda_cache() -> None:
+    """Best-effort ``torch.cuda.empty_cache()`` — never raises.
+
+    Releases the PyTorch caching allocator's *cached but unallocated*
+    blocks. Doesn't free actively-held tensors but reclaims the
+    fragmentation overhead (often hundreds of MB after a few pages of
+    dense Arabic OCR) so the next page has contiguous room.
+    """
+    try:
+        import torch
+    except ImportError:  # pragma: no cover — torch is a hard dep of the [ml] extra
+        return
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # pragma: no cover — empty_cache is best-effort
+        pass
+
+
 class SuryaOCRTranscriber:
     """OCR transcriber backed by surya.
 
@@ -111,10 +152,38 @@ class SuryaOCRTranscriber:
         if self._batch_size is not None:
             kwargs["recognition_batch_size"] = self._batch_size
             kwargs["detection_batch_size"] = self._batch_size
+        # On a 6 GB GPU surya's caching allocator fragments across pages
+        # — by ~5 pages of dense Arabic text the reserved-but-unallocated
+        # pool grows to ~700 MB and a fresh activation can't find a
+        # contiguous block. Three escape hatches stack here:
+        #
+        # 1. Proactive ``torch.cuda.empty_cache()`` before every call so
+        #    each page starts with maximum contiguous VRAM.
+        # 2. On the first CUDA OOM, drop both batch sizes to 1 (not just
+        #    halved — anecdotally halving still OOMs on dense Arabic
+        #    pages whose text-line count exceeds 200) and retry once.
+        # 3. The CLI entry point sets ``PYTORCH_CUDA_ALLOC_CONF=
+        #    expandable_segments:True`` (when CUDA is in use) so the
+        #    allocator coalesces freed blocks into a single growable
+        #    arena instead of leaving fixed-size pools.
+        _release_cuda_cache()
         try:
             return rec(images, **kwargs)  # type: ignore[operator,no-any-return]
         except Exception as exc:
-            raise OCRTranscriptionError(f"surya failed: {exc}") from exc
+            if not _is_cuda_oom(exc):
+                raise OCRTranscriptionError(f"surya failed: {exc}") from exc
+            _release_cuda_cache()
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["recognition_batch_size"] = 1
+            retry_kwargs["detection_batch_size"] = 1
+            try:
+                return rec(images, **retry_kwargs)  # type: ignore[operator]
+            except Exception as retry_exc:
+                raise OCRTranscriptionError(
+                    f"surya failed after CUDA OOM retry: {retry_exc}"
+                ) from retry_exc
+            finally:
+                _release_cuda_cache()
 
     def _join_result(self, result: object) -> str:
         text = "\n".join(line.text for line in result.text_lines)  # type: ignore[attr-defined]
@@ -180,6 +249,12 @@ class SuryaOCRTranscriber:
                 else:
                     text = ""
                 out[idx] = regions[idx].with_text(text)
+
+        # Per-page cache flush: drop the caching allocator's reserved-
+        # but-unallocated pool so the next page starts with maximum
+        # contiguous VRAM. Without this, dense documents fragment the
+        # allocator after ~5 pages and OOM on a 6 GB GPU.
+        _release_cuda_cache()
 
         # ``out`` is fully populated (every input slot was assigned).
         return [r for r in out if r is not None]

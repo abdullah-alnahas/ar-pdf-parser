@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -515,6 +516,16 @@ def _resolve_max_workers(value: str) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Opt PyTorch into ``expandable_segments`` *before* torch is imported
+    # anywhere in this process. The setting only takes effect on first
+    # CUDA init; setting it after that is a no-op. PyTorch's allocator
+    # otherwise leaves freed blocks in fixed-size pools, which fragments
+    # badly across surya OCR runs on dense Arabic pages — by ~5 pages
+    # the reserved-but-unallocated pool eats hundreds of MB, OOMing the
+    # 6th page on a 6 GB GPU. See the OOM error message itself for
+    # PyTorch's pointer to this knob. ``setdefault`` lets users override.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     parser = build_parser()
     ns = parser.parse_args(argv)
     if ns.prefetch_models:

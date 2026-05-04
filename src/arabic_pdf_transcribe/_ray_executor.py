@@ -27,6 +27,27 @@ Design constraints (single-GPU 6 GB hardware in mind):
 * PIL images cross the actor boundary via Ray's plasma object store
   (zero-copy after the first ``put``). Pillow has been picklable since
   v8 so this works without serialisation hooks.
+
+Sequential lifecycle (6 GB GPU memory budget)
+---------------------------------------------
+
+Both proxies spawn their actor **lazily** on first use, and expose a
+``release()`` method that calls :func:`ray.kill` on the actor. The
+pipeline orchestrator invokes ``release()`` between Phase C (layout)
+and Phase D (OCR) so only one model is resident in VRAM at a time:
+
+* Phase C starts → layout proxy spawns its actor → DocLayout-YOLO
+  loads in worker.
+* Phase C completes → ``layout_detector.release()`` → worker process
+  dies → CUDA context torn down → DocLayout VRAM fully freed.
+* Phase D starts → OCR proxy spawns its actor → Surya loads in a
+  fresh worker process.
+* Phase D completes → ``ocr_transcriber.release()`` → worker dies.
+
+Peak VRAM is therefore ``max(layout, ocr)`` not ``layout + ocr``,
+which is what unblocks 6 GB cards. With both actors alive the peak is
+~5.3 GB (Surya 4 GB + DocLayout 0.5 GB + 2× CUDA contexts ~0.8 GB +
+allocator fragmentation), versus ~4.5 GB with sequential lifecycle.
 """
 
 from __future__ import annotations
@@ -145,6 +166,15 @@ def _build_ocr_actor_class(num_cpus: float, num_gpus: float) -> Any:
             disable_formula: bool,
             batch_size: int | None,
         ) -> None:
+            # Worker is a fresh Python process — the driver's env is
+            # inherited but the OOM-prevention hint must be set before
+            # the actor's first ``import torch`` to take effect on this
+            # CUDA context. Setting via ``setdefault`` is harmless when
+            # the driver already exported it.
+            import os
+            os.environ.setdefault(
+                "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
+            )
             from arabic_pdf_transcribe.cli import _build_ocr
 
             self._adapter = _build_ocr(
@@ -168,7 +198,7 @@ def _build_ocr_actor_class(num_cpus: float, num_gpus: float) -> Any:
             assert self._adapter is not None
             page_batch = getattr(self._adapter, "transcribe_page", None)
             if callable(page_batch):
-                return list(page_batch(regions, image))
+                return list(page_batch(regions, image))  # type: ignore[arg-type]
             # Fallback for adapters without transcribe_page (none ship with
             # the project right now, but the Protocol allows it).
             from arabic_pdf_transcribe.regions import RegionRole
@@ -189,11 +219,26 @@ def _build_ocr_actor_class(num_cpus: float, num_gpus: float) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def _kill_actor(ray_module: Any, actor: Any) -> None:
+    """Best-effort ``ray.kill`` — never raises out of ``release()``.
+
+    Killing the actor terminates the worker **process**, which destroys
+    the CUDA context and unconditionally frees model weights from VRAM
+    (something ``del`` + ``torch.cuda.empty_cache()`` can't guarantee).
+    """
+    try:
+        ray_module.kill(actor, no_restart=True)
+    except Exception:  # pragma: no cover — kill is fire-and-forget
+        pass
+
+
 class RayLayoutProxy:
     """Driver-side stand-in for a :class:`LayoutDetector`.
 
     Forwards every ``detect`` call to a :class:`_LayoutActor` running
-    in a Ray worker.
+    in a Ray worker. The actor spawns lazily on first ``detect()`` and
+    can be torn down via :meth:`release` to free its VRAM before the
+    next phase begins.
     """
 
     def __init__(
@@ -204,16 +249,33 @@ class RayLayoutProxy:
         num_cpus: float = 1.0,
         num_gpus: float = 0.5,
     ) -> None:
-        actor_cls = _build_layout_actor_class(num_cpus=num_cpus, num_gpus=num_gpus)
         self._ray = _ensure_ray_initialised()
-        self._actor = actor_cls.remote(backend, device)
+        self._actor_cls = _build_layout_actor_class(num_cpus=num_cpus, num_gpus=num_gpus)
+        self._backend = backend
+        self._device = device
+        self._actor: Any | None = None
+
+    def _ensure_actor(self) -> Any:
+        if self._actor is None:
+            self._actor = self._actor_cls.remote(self._backend, self._device)
+        return self._actor
 
     def detect(self, page_image: PILImage, page_index: int) -> Sequence[Region]:
-        return self._ray.get(self._actor.detect.remote(page_image, page_index))
+        actor = self._ensure_actor()
+        return self._ray.get(actor.detect.remote(page_image, page_index))
+
+    def release(self) -> None:
+        """Terminate the worker process to free VRAM. Idempotent."""
+        if self._actor is not None:
+            _kill_actor(self._ray, self._actor)
+            self._actor = None
 
 
 class RayOCRProxy:
-    """Driver-side stand-in for an :class:`OCRTranscriber`."""
+    """Driver-side stand-in for an :class:`OCRTranscriber`.
+
+    Same lazy-spawn / :meth:`release` contract as :class:`RayLayoutProxy`.
+    """
 
     def __init__(
         self,
@@ -225,19 +287,41 @@ class RayOCRProxy:
         num_cpus: float = 1.0,
         num_gpus: float = 0.5,
     ) -> None:
-        actor_cls = _build_ocr_actor_class(num_cpus=num_cpus, num_gpus=num_gpus)
         self._ray = _ensure_ray_initialised()
-        self._actor = actor_cls.remote(backend, device, disable_formula, batch_size)
+        self._actor_cls = _build_ocr_actor_class(num_cpus=num_cpus, num_gpus=num_gpus)
+        self._backend = backend
+        self._device = device
+        self._disable_formula = disable_formula
+        self._batch_size = batch_size
+        self._actor: Any | None = None
+
+    def _ensure_actor(self) -> Any:
+        if self._actor is None:
+            self._actor = self._actor_cls.remote(
+                self._backend,
+                self._device,
+                self._disable_formula,
+                self._batch_size,
+            )
+        return self._actor
 
     def transcribe(self, region: Region, page_image: PILImage) -> Region:
-        return self._ray.get(self._actor.transcribe.remote(region, page_image))
+        actor = self._ensure_actor()
+        return self._ray.get(actor.transcribe.remote(region, page_image))
 
     def transcribe_page(
         self, regions: Sequence[Region], page_image: PILImage
     ) -> list[Region]:
+        actor = self._ensure_actor()
         return self._ray.get(
-            self._actor.transcribe_page.remote(list(regions), page_image)
+            actor.transcribe_page.remote(list(regions), page_image)
         )
+
+    def release(self) -> None:
+        """Terminate the worker process to free VRAM. Idempotent."""
+        if self._actor is not None:
+            _kill_actor(self._ray, self._actor)
+            self._actor = None
 
 
 __all__ = ["RayLayoutProxy", "RayOCRProxy"]
