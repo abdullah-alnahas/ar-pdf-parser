@@ -160,6 +160,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.cpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
+    # PyTriton spawns triton_python_backend_stub as a subprocess; that
+    # binary dlopens libpython3.X.so.1.0 from LD_LIBRARY_PATH, not from
+    # the running interpreter. Prepend sys.exec_prefix/lib so the stub
+    # finds the matching shared lib in conda / venv layouts where it
+    # is not on the system loader path.
+    _ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    _libdir = os.path.join(sys.exec_prefix, "lib")
+    if _libdir not in _ld_path.split(":"):
+        os.environ["LD_LIBRARY_PATH"] = (
+            f"{_libdir}:{_ld_path}" if _ld_path else _libdir
+        )
+        logger.info("prepended %s to LD_LIBRARY_PATH for backend stub", _libdir)
+
     try:
         from pytriton.model_config import ModelConfig, Tensor
         from pytriton.triton import Triton, TritonConfig
