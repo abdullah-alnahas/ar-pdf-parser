@@ -405,14 +405,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     config_doc = _load_config_doc(args.config)
     validator_cfg = _validator_cfg_from_doc(config_doc)
-    device, device_is_cli_override = _resolve_device(args.device, config_doc)
-    dtype, dtype_is_cli_override = _resolve_dtype(args.dtype, config_doc)
+    device = _resolve_device(args.device, config_doc)
+    dtype = _resolve_dtype(args.dtype, config_doc)
     layout_detector, ocr_transcriber = _maybe_build_ml_adapters(
         config_doc,
         device=device,
-        force_device=device_is_cli_override,
         dtype=dtype,
-        force_dtype=dtype_is_cli_override,
         layout_backend=args.layout_backend,
         ocr_backend=args.ocr_backend,
         disable_formula=args.disable_formula,
@@ -534,49 +532,43 @@ def _resolve_dpi(cli_dpi: int | None, doc: dict[str, object]) -> int:
     return 200
 
 
-def _resolve_device(cli_device: str | None, doc: dict[str, object]) -> tuple[str, bool]:
-    """Resolve the runtime device and whether the CLI explicitly set it.
+def _resolve_device(cli_device: str | None, doc: dict[str, object]) -> str:
+    """Resolve the runtime device.
 
-    Returns ``(device_string, cli_override)``. ``cli_override=True``
-    means the user passed ``--device`` and the choice MUST override
-    any per-section ``[layout].device`` / ``[ocr].device`` (this is
-    the user's escape hatch for "force CPU" or "force CUDA"). When
-    ``cli_override=False`` the value came from ``[runtime].device``
-    or the ``"auto"`` default and per-section overrides win.
+    ``--device`` wins over ``[runtime].device`` over ``"auto"``.
 
     Issue #18 RC#1: gives the user a knob to force CPU when GPU OOMs
     early or to force CUDA when auto-detection misses (e.g. ROCm
     builds).
     """
     if cli_device is not None:
-        return cli_device, True
+        return cli_device
     section = doc.get("runtime")
     if isinstance(section, dict):
         value = section.get("device")
         if isinstance(value, str) and value:
-            return value, False
-    return "auto", False
+            return value
+    return "auto"
 
 
-def _resolve_dtype(cli_dtype: str | None, doc: dict[str, object]) -> tuple[str, bool]:
-    """Resolve the ML dtype and whether the CLI explicitly set it.
+def _resolve_dtype(cli_dtype: str | None, doc: dict[str, object]) -> str:
+    """Resolve the ML dtype.
 
     Mirrors :func:`_resolve_device`: ``--dtype`` wins over
-    ``[runtime].dtype`` over ``"auto"``. ``cli_override=True`` means
-    per-section ``[layout].dtype`` / ``[ocr].dtype`` MUST be replaced.
+    ``[runtime].dtype`` over ``"auto"``.
 
     Issue #20 RC#1: gives the user a knob to force fp16 / bf16 for
     6 GB GPUs, or to force fp32 when reduced precision degrades a
     specific corpus.
     """
     if cli_dtype is not None:
-        return cli_dtype, True
+        return cli_dtype
     section = doc.get("runtime")
     if isinstance(section, dict):
         value = section.get("dtype")
         if isinstance(value, str) and value:
-            return value, False
-    return "auto", False
+            return value
+    return "auto"
 
 
 def _prefetch_models(
@@ -652,9 +644,7 @@ def _maybe_build_ml_adapters(
     doc: dict[str, object] | None = None,
     *,
     device: str | None = None,
-    force_device: bool = False,
     dtype: str | None = None,
-    force_dtype: bool = False,
     layout_backend: str = "full-page",
     ocr_backend: str = "surya",
     disable_formula: bool = False,
