@@ -34,6 +34,7 @@ nothing until :func:`emit_docx` is first called.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -334,9 +335,43 @@ def _add_list_item(
     return document.add_paragraph(text, style=style)
 
 
+# lxml refuses XML 1.0 control characters (everything below 0x20 except
+# tab/LF/CR). Failure reasons can carry ANSI colour escapes (``\x1b[…``)
+# when the underlying exception originates inside a Ray actor — its
+# default ``__str__`` includes coloured traceback frames. Strip those
+# bytes here so the writer never crashes on diagnostic text.
+_DOCX_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_FAILURE_REASON_MAX_CHARS = 400
+
+
+def _sanitise_failure_reason(reason: str) -> str:
+    """Make a failure-reason string safe for python-docx + readable.
+
+    Two transformations:
+
+    1. Drop XML-illegal control bytes (``\\x00-\\x1f`` minus
+       ``\\t \\n \\r``) so lxml accepts the paragraph text.
+    2. Collapse multi-line tracebacks to the most informative line —
+       the *last* line of the form ``ExceptionType: message`` — so the
+       failure paragraph isn't a multi-KB stack trace dump. Falls back
+       to the cleaned full string if no such line exists.
+
+    Output is truncated to :data:`_FAILURE_REASON_MAX_CHARS` characters.
+    """
+    cleaned = _DOCX_CONTROL_RE.sub("", reason)
+    err_lines = [
+        ln for ln in cleaned.splitlines()
+        if ln and ":" in ln and not ln.startswith(" ")
+    ]
+    pretty = err_lines[-1] if err_lines else cleaned
+    if len(pretty) > _FAILURE_REASON_MAX_CHARS:
+        pretty = pretty[: _FAILURE_REASON_MAX_CHARS - 1] + "…"
+    return pretty
+
+
 def _add_failure(document: _DocxDocument, region: Region) -> _DocxParagraph:
     page_n = region.page_index + 1
-    reason = region.failure_reason or "unknown"
+    reason = _sanitise_failure_reason(region.failure_reason or "unknown")
     return document.add_paragraph(
         f"Transcription failed (page {page_n}): {reason}", style="Quote"
     )
