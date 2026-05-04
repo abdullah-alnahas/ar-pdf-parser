@@ -1,30 +1,39 @@
-"""End-to-end pipeline orchestrator.
+"""End-to-end pipeline orchestrator (Strategy B, layout-then-OCR).
 
-Wires every prior phase into one ``transcribe(pdf_path, ...)`` entry
-point:
+Wires every prior phase into one ``transcribe(pdf_path, ...)`` entry point
+using a *staged* pipeline rather than per-page interleaving:
 
 1. **Open** the PDF (encrypted / corrupted PDFs raise typed errors).
-2. **Per page**:
-   a. **Native extract** + per-page **validate**.
-   b. If validation accepts → take the native regions.
-   c. Else → **rasterise** → **layout-detect** → **per-region OCR**.
-   d. **Reorder** + **classify roles**.
-   e. On any caught failure, synthesise a single
-      :data:`RegionRole.FAILURE_PLACEHOLDER` region for the page so
-      the emitter still produces output for that page slot.
-3. **Yield** a :class:`PageOutcome` per page; collect into
-   :class:`TranscribeResult`.
+2. **Phase A — Validate**. Walk every page; native-accepted pages land in
+   their final outcome immediately, ML-bound pages queue up.
+3. **Phase B — Rasterise**. All ML-bound pages render to images in one
+   pass (optionally parallel; ``pypdfium2`` is serialised under
+   ``document_lock``).
+4. **Phase C — Layout**. Run the layout detector across every ML page
+   sequentially with a single model loaded.
+5. **Phase D — OCR**. Run OCR across every ML page sequentially with a
+   single model loaded — the layout model is already done by this point
+   so VRAM contention is minimised.
+6. **Phase E — Stitch**. Post-process (reorder + classify) per page and
+   assemble :class:`PageOutcome` records back into source page-index
+   order.
 
-The orchestrator depends on ``LayoutDetector`` and ``OCRTranscriber``
-*Protocols* — production wiring uses the HF adapters, tests inject
-stubs. The validator, the rasteriser, the reorderer, the role
-classifier, and the emitters are pluggable too (callable kwargs with
-sensible defaults).
+Design notes:
 
-A process-scoped :class:`tempfile.TemporaryDirectory` is created on
-entry and removed on exit (success or failure). Page rasterisation
-keeps images in memory by default; the temp dir is reserved for
-adapters that need a path-shaped artefact.
+* Per-page failure isolation is preserved: a single page's failure in
+  any phase becomes a :data:`RegionRole.FAILURE_PLACEHOLDER` outcome and
+  the rest of the run continues. ``strict=True`` re-raises on first
+  failure (test contract).
+* ``max_workers`` parallelises only Phase B (rasterise). Layout and
+  OCR run sequentially because GPU model calls serialise on CUDA
+  anyway, and a sequential phase keeps a single model resident on the
+  GPU at a time.
+* The orchestrator depends on ``LayoutDetector`` and ``OCRTranscriber``
+  *Protocols* — production wiring uses the HF adapters, tests inject
+  stubs. Validator, rasteriser, reorderer, classifier, and emitters are
+  pluggable callables.
+* A process-scoped :class:`tempfile.TemporaryDirectory` is created on
+  entry and removed on exit (success or failure).
 """
 
 from __future__ import annotations
@@ -142,6 +151,14 @@ orchestrator does not catch.
 """
 
 
+@dataclass(frozen=True, slots=True)
+class _MLJob:
+    """Per-page payload threading through Phases B → E."""
+
+    native_page: NativePage
+    validation: ValidationResult
+
+
 def transcribe(
     pdf_path: Path | str,
     *,
@@ -158,7 +175,11 @@ def transcribe(
     max_workers: int = 1,
     progress: ProgressCallback | None = None,
 ) -> TranscribeResult:
-    """Transcribe ``pdf_path`` and return a :class:`TranscribeResult`.
+    """Transcribe ``pdf_path`` with a staged layout-then-OCR pipeline.
+
+    See module docstring for phase ordering. Per-page failure isolation
+    is preserved across phases; ``strict=True`` re-raises on first
+    failure.
 
     Parameters
     ----------
@@ -168,9 +189,9 @@ def transcribe(
         the loader; the caller maps these to CLI exit codes.
     layout_detector:
         Optional :class:`LayoutDetector` for the ML branch. When
-        ``None`` and the ML branch is needed, the orchestrator raises
-        :class:`RuntimeError`. The CLI wires the production HF
-        adapter; tests inject a stub.
+        ``None`` and the ML branch is needed, every ML-bound page
+        records a failure outcome (or, with ``strict=True``, the run
+        aborts on the first such page).
     ocr_transcriber:
         Optional :class:`OCRTranscriber` — same pattern as
         ``layout_detector``.
@@ -201,11 +222,9 @@ def transcribe(
         best-effort mode), failures synthesise a placeholder region
         and the pipeline continues.
     max_workers:
-        Reserved for future per-page parallelism on the ML branch
-        (default ``1``, sequential). v1 keeps the loop sequential to
-        bound peak RSS — the parameter is plumbed through so the
-        CLI surface is stable; phase 9 will enable parallel ML
-        runs after benchmarking.
+        Worker count for Phase B (rasterise). Layout and OCR run
+        sequentially regardless because GPU model calls serialise on
+        CUDA. Default ``1`` (fully sequential).
     progress:
         Optional ``(page_index, total_pages, event)`` callback for
         progress reporting.
@@ -224,226 +243,290 @@ def transcribe(
     from arabic_pdf_transcribe.pdf._pypdfium2_loader import open_pdf
 
     with _process_temp_dir() as _tmp, open_pdf(pdf_path) as document:
-        # Single document handle: page count, native extraction, and
-        # ML-branch rasterisation all share this one ``pypdfium2``
-        # instance. The loader translates encrypted/corrupted errors
-        # at the boundary, so those exit codes fire here before any
-        # extraction work.
         total = len(document)
         # Native extraction iterates the document handle sequentially —
-        # materialise once so the parallel page workers below don't
-        # contend on the iterator (and so a strict-mode failure during
-        # extraction fires before any worker starts).
+        # materialise once so downstream phases work from a stable
+        # ordered list of pages and so a strict-mode failure during
+        # extraction fires before any phase work begins.
         native_pages = list(extract_native_from_document(document, pages=selected))
 
-        # ``pypdfium2`` is not thread-safe across page handles on the
-        # same document; the lock serialises ``document[i]``+rasterise
-        # while the heavy ML work (layout + OCR on the rendered image)
-        # runs unlocked, so threads still parallelise the expensive part.
-        document_lock = threading.Lock()
-
-        def _run_one(native_page: NativePage) -> PageOutcome:
-            return _process_page(
-                document=document,
-                document_lock=document_lock,
+        # ----- Phase A: validate every page (native-accept inline, else queue ML)
+        outcomes: dict[int, PageOutcome] = {}
+        ml_jobs: list[_MLJob] = []
+        for native_page in native_pages:
+            outcome_or_job = _run_validate_phase(
                 native_page=native_page,
                 total=total,
                 validator=actual_validator,
                 validator_config=cfg,
+                reorder_call=reorder_call,
+                classify_cfg=classify_cfg,
+                rtl=rtl,
+                strict=strict,
+                progress=progress,
+            )
+            if isinstance(outcome_or_job, PageOutcome):
+                outcomes[native_page.page_index] = outcome_or_job
+            else:
+                ml_jobs.append(outcome_or_job)
+
+        if ml_jobs:
+            # ----- Phase B: rasterise all ML pages (parallel; doc_lock-serialised)
+            page_images = _run_rasterise_phase(
+                ml_jobs=ml_jobs,
+                document=document,
+                total=total,
+                dpi=dpi,
+                max_workers=max_workers,
+                strict=strict,
+                progress=progress,
+                outcomes=outcomes,
+            )
+
+            # ----- Phase C: layout sequentially across all ML pages
+            page_regions = _run_layout_phase(
+                ml_jobs=ml_jobs,
+                page_images=page_images,
+                total=total,
                 layout_detector=layout_detector,
+                ocr_transcriber=ocr_transcriber,
+                strict=strict,
+                progress=progress,
+                outcomes=outcomes,
+            )
+
+            # ----- Phase D: OCR sequentially across all ML pages
+            _run_ocr_phase(
+                ml_jobs=ml_jobs,
+                page_images=page_images,
+                page_regions=page_regions,
+                total=total,
                 ocr_transcriber=ocr_transcriber,
                 reorder_call=reorder_call,
                 classify_cfg=classify_cfg,
                 rtl=rtl,
-                dpi=dpi,
                 strict=strict,
                 progress=progress,
+                outcomes=outcomes,
             )
 
-        if max_workers <= 1 or len(native_pages) <= 1:
-            outcomes = [_run_one(np) for np in native_pages]
-        else:
-            with ThreadPoolExecutor(
-                max_workers=max_workers, thread_name_prefix="apt-page"
-            ) as pool:
-                # ``map`` preserves input order, which is what the
-                # caller expects for ``pages_out`` / ``flat_regions``.
-                # Strict-mode failures re-raise out of the worker and
-                # propagate through ``map`` to the caller.
-                outcomes = list(pool.map(_run_one, native_pages))
-
-    pages_out: list[PageOutcome] = list(outcomes)
+    # Phase E (stitch): assemble in source-page order.
+    pages_out = [outcomes[np.page_index] for np in native_pages]
     flat_regions: list[Region] = [r for outcome in pages_out for r in outcome.regions]
     return TranscribeResult(pages=tuple(pages_out), regions=tuple(flat_regions))
 
 
 # ---------------------------------------------------------------------------
-# Per-page processing
+# Phase A — validate (+ inline native post-process)
 # ---------------------------------------------------------------------------
 
 
-def _process_page(
+def _run_validate_phase(
     *,
-    document: object,
-    document_lock: threading.Lock,
     native_page: NativePage,
     total: int,
     validator: Callable[[NativePage, ValidatorConfig], ValidationResult],
     validator_config: ValidatorConfig,
-    layout_detector: LayoutDetector | None,
-    ocr_transcriber: OCRTranscriber | None,
     reorder_call: Callable[..., list[Region]],
     classify_cfg: ClassifyConfig,
     rtl: bool,
-    dpi: int,
     strict: bool,
     progress: ProgressCallback | None,
-) -> PageOutcome:
+) -> PageOutcome | _MLJob:
+    """Validate one page.
+
+    Returns either a finished :class:`PageOutcome` (native-accept or
+    failure-during-validation) or an :class:`_MLJob` to be processed by
+    the ML phases.
+    """
     page_index = native_page.page_index
     _emit_progress(progress, page_index, total, "start")
-    # Track which branch was active when an exception fires so the
-    # failure-placeholder region carries the correct ``RegionSource``
-    # (NATIVE for validator/native-extract failures; OCR for ML-branch
-    # failures). Mutated as the page progresses.
-    branch_state = {"branch": "native"}
     try:
         result = validator(native_page, validator_config)
-        if result.accept:
-            regions = _post_process_regions(
-                native_page.regions,
-                page_width=native_page.page_width,
-                page_height=native_page.page_height,
-                reorder_call=reorder_call,
-                classify_cfg=classify_cfg,
-                rtl=rtl,
-            )
-            _emit_progress(progress, page_index, total, "complete:native")
-            return PageOutcome(
-                page_index=page_index,
-                branch="native",
-                regions=tuple(regions),
-                validation=result,
-            )
-        # ML fallback.
-        branch_state["branch"] = "ml"
-        regions = _run_ml_branch(
-            document=document,
-            document_lock=document_lock,
+    except BaseException as exc:  # narrowed in _handle_phase_exc
+        return _handle_phase_exc(
+            exc,
+            page_index=page_index,
             native_page=native_page,
             total=total,
-            layout_detector=layout_detector,
-            ocr_transcriber=ocr_transcriber,
+            branch="native",
+            strict=strict,
+            progress=progress,
+        )
+    if not result.accept:
+        return _MLJob(native_page=native_page, validation=result)
+    # Native accept → post-process inline.
+    try:
+        regions = _post_process_regions(
+            native_page.regions,
+            page_width=native_page.page_width,
+            page_height=native_page.page_height,
             reorder_call=reorder_call,
             classify_cfg=classify_cfg,
             rtl=rtl,
-            dpi=dpi,
+        )
+    except BaseException as exc:
+        return _handle_phase_exc(
+            exc,
+            page_index=page_index,
+            native_page=native_page,
+            total=total,
+            branch="native",
+            strict=strict,
             progress=progress,
         )
-        _emit_progress(progress, page_index, total, "complete:ml")
-        return PageOutcome(
-            page_index=page_index,
-            branch="ml",
-            regions=tuple(regions),
-            validation=result,
-        )
-    except MemoryError as exc:
-        reason = "out_of_memory"
-        if strict:
-            raise OutOfMemoryDuringInference(
-                f"page {page_index + 1}: {exc}; reduce --max-workers or rasterisation DPI"
-            ) from exc
-        _emit_progress(progress, page_index, total, f"failure:{reason}")
-        return _failure_outcome(page_index, native_page, reason, branch_state["branch"])
-    except ArabicPdfTranscribeError as exc:
-        # Include ``str(exc)`` in the reason so JSON-log consumers see
-        # the actionable hint baked into the exception (e.g. the
-        # "prefetch the weights with: arabic-pdf-transcribe
-        # --prefetch-models" message on ModelDownloadError). Previous
-        # behaviour reported only the class name, hiding the hint.
-        # Issue #16 root cause #3.
-        reason = f"{type(exc).__name__}:{exc}"
-        if strict:
-            raise
-        _emit_progress(progress, page_index, total, f"failure:{reason}")
-        return _failure_outcome(page_index, native_page, reason, branch_state["branch"])
-    except RuntimeError as exc:
-        # ``torch.cuda.OutOfMemoryError`` subclasses RuntimeError —
-        # detect by class name + module so we don't have to import
-        # torch (it may not be installed). Other RuntimeErrors are
-        # treated as generic per-page failures below.
-        if _is_cuda_oom(exc):
-            if strict:
-                raise OutOfMemoryDuringInference(
-                    f"page {page_index + 1}: CUDA OOM: {exc}; "
-                    f"reduce --max-workers or rasterisation DPI"
-                ) from exc
-            _emit_progress(progress, page_index, total, "failure:cuda_out_of_memory")
-            return _failure_outcome(
-                page_index, native_page, "cuda_out_of_memory", branch_state["branch"]
-            )
-        reason = f"{type(exc).__name__}:{exc}"
-        if strict:
-            raise
-        _emit_progress(progress, page_index, total, f"failure:{reason}")
-        return _failure_outcome(page_index, native_page, reason, branch_state["branch"])
-    except Exception as exc:
-        # Bare-except trade-off: this is the per-page boundary for the
-        # spec's "best-effort default" contract — if an upstream stage
-        # raises an unexpected exception we MUST NOT abort the whole
-        # run; a single failed page becomes a placeholder so the rest
-        # of the document still transcribes. Typed exceptions
-        # (Memory/ArabicPdfTranscribe/RuntimeError-CUDA-OOM) are
-        # handled in dedicated arms above and surface specific
-        # ``failure_reason`` strings; this catch-all only fires for
-        # genuinely unexpected errors and records the type+message
-        # verbatim. With ``--strict`` the original exception is
-        # re-raised, preserving the traceback.
-        reason = f"{type(exc).__name__}:{exc}"
-        if strict:
-            raise
-        _emit_progress(progress, page_index, total, f"failure:{reason}")
-        return _failure_outcome(page_index, native_page, reason, branch_state["branch"])
+    _emit_progress(progress, page_index, total, "complete:native")
+    return PageOutcome(
+        page_index=page_index,
+        branch="native",
+        regions=tuple(regions),
+        validation=result,
+    )
 
 
-def _is_cuda_oom(exc: BaseException) -> bool:
-    cls = type(exc)
-    name = cls.__name__
-    module = (cls.__module__ or "").split(".", 1)[0]
-    return name == "OutOfMemoryError" and module == "torch"
+# ---------------------------------------------------------------------------
+# Phase B — rasterise (parallel, doc_lock)
+# ---------------------------------------------------------------------------
 
 
-def _run_ml_branch(
+def _run_rasterise_phase(
     *,
+    ml_jobs: Sequence[_MLJob],
     document: object,
-    document_lock: threading.Lock,
-    native_page: NativePage,
+    total: int,
+    dpi: int,
+    max_workers: int,
+    strict: bool,
+    progress: ProgressCallback | None,
+    outcomes: dict[int, PageOutcome],
+) -> dict[int, PILImage]:
+    """Rasterise every ML page; failures land directly in ``outcomes``."""
+    # ``pypdfium2`` is not thread-safe across page handles on the same
+    # document; the lock serialises ``document[i]`` + render so multi-thread
+    # rasterisation stays sound (the work is mostly I/O + Pillow encode).
+    document_lock = threading.Lock()
+
+    def _do_one(job: _MLJob) -> tuple[int, PILImage | PageOutcome]:
+        page_index = job.native_page.page_index
+        try:
+            with document_lock:
+                image = _rasterise_page_from_document(document, page_index, dpi=dpi)
+        except BaseException as exc:
+            return page_index, _handle_phase_exc(
+                exc,
+                page_index=page_index,
+                native_page=job.native_page,
+                total=total,
+                branch="ml",
+                strict=strict,
+                progress=progress,
+            )
+        _emit_progress(progress, page_index, total, "rasterise")
+        return page_index, image
+
+    if max_workers > 1 and len(ml_jobs) > 1:
+        with ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="apt-ras"
+        ) as pool:
+            results = list(pool.map(_do_one, ml_jobs))
+    else:
+        results = [_do_one(job) for job in ml_jobs]
+
+    page_images: dict[int, PILImage] = {}
+    for page_index, result in results:
+        if isinstance(result, PageOutcome):
+            outcomes[page_index] = result
+        else:
+            page_images[page_index] = result
+    return page_images
+
+
+# ---------------------------------------------------------------------------
+# Phase C — layout (sequential, single model loaded)
+# ---------------------------------------------------------------------------
+
+
+def _run_layout_phase(
+    *,
+    ml_jobs: Sequence[_MLJob],
+    page_images: dict[int, PILImage],
     total: int,
     layout_detector: LayoutDetector | None,
+    ocr_transcriber: OCRTranscriber | None,
+    strict: bool,
+    progress: ProgressCallback | None,
+    outcomes: dict[int, PageOutcome],
+) -> dict[int, list[Region]]:
+    page_regions: dict[int, list[Region]] = {}
+    for job in ml_jobs:
+        page_index = job.native_page.page_index
+        if page_index in outcomes:
+            # Already failed in an earlier phase.
+            continue
+        if layout_detector is None or ocr_transcriber is None:
+            exc = RuntimeError(
+                f"ML branch needed for page {page_index + 1} but no "
+                f"layout_detector / ocr_transcriber wired"
+            )
+            outcomes[page_index] = _handle_phase_exc(
+                exc,
+                page_index=page_index,
+                native_page=job.native_page,
+                total=total,
+                branch="ml",
+                strict=strict,
+                progress=progress,
+            )
+            continue
+        image = page_images[page_index]
+        _emit_progress(progress, page_index, total, "layout")
+        try:
+            detected = list(layout_detector.detect(image, page_index))
+        except BaseException as exc:
+            outcomes[page_index] = _handle_phase_exc(
+                exc,
+                page_index=page_index,
+                native_page=job.native_page,
+                total=total,
+                branch="ml",
+                strict=strict,
+                progress=progress,
+            )
+            continue
+        # Issue #18 RC#2: emit a per-region progress event so the UI
+        # shows progress within a long page run instead of appearing
+        # to hang.
+        n_regions = len(detected)
+        for idx, region in enumerate(detected, start=1):
+            _emit_progress(
+                progress, page_index, total, f"region:{idx}/{n_regions}:{region.role.value}"
+            )
+        page_regions[page_index] = detected
+    return page_regions
+
+
+# ---------------------------------------------------------------------------
+# Phase D — OCR (sequential, single model loaded)
+# ---------------------------------------------------------------------------
+
+
+def _run_ocr_phase(
+    *,
+    ml_jobs: Sequence[_MLJob],
+    page_images: dict[int, PILImage],
+    page_regions: dict[int, list[Region]],
+    total: int,
     ocr_transcriber: OCRTranscriber | None,
     reorder_call: Callable[..., list[Region]],
     classify_cfg: ClassifyConfig,
     rtl: bool,
-    dpi: int,
+    strict: bool,
     progress: ProgressCallback | None,
-) -> list[Region]:
-    if layout_detector is None or ocr_transcriber is None:
-        raise RuntimeError(
-            "ML branch needed for page "
-            f"{native_page.page_index + 1} but no layout_detector / ocr_transcriber wired"
-        )
-    page_index = native_page.page_index
-    _emit_progress(progress, page_index, total, "layout")
-    with document_lock:
-        page_image = _rasterise_page_from_document(document, page_index, dpi=dpi)
-    detected = list(layout_detector.detect(page_image, page_index))
-    n_regions = len(detected)
-    # Issue #18 RC#2: emit a per-region progress event before each
-    # OCR call so a long CPU run shows visible progress instead of
-    # appearing to hang. Encoded into the event string so the
-    # ``ProgressCallback`` signature stays stable.
-    for idx, region in enumerate(detected, start=1):
-        role_name = region.role.value
-        _emit_progress(progress, page_index, total, f"region:{idx}/{n_regions}:{role_name}")
+    outcomes: dict[int, PageOutcome],
+) -> None:
+    if ocr_transcriber is None:
+        # Layout phase already filled outcomes with adapter-missing failures.
+        return
     # Adapter-level batching: when the OCR backend exposes
     # ``transcribe_page`` (surya, easyocr — see
     # :mod:`arabic_pdf_transcribe.ocr`), all non-figure regions on the
@@ -451,28 +534,125 @@ def _run_ml_branch(
     # warm-up cost amortises across the page. Adapters without
     # ``transcribe_page`` fall back to the per-region loop.
     page_batch = getattr(ocr_transcriber, "transcribe_page", None)
-    if callable(page_batch):
-        batched = page_batch(detected, page_image)
-        transcribed: list[Region] = list(batched)  # type: ignore[arg-type]
-    else:
-        transcribed = []
-        for region in detected:
-            if region.role is RegionRole.FIGURE:
-                transcribed.append(region)
-                continue
-            transcribed.append(ocr_transcriber.transcribe(region, page_image))
-    # ML-branch bboxes are in pixel coords on the rasterised image, so the
-    # page dimensions handed to the post-processor must match (otherwise
-    # full-page regions land in the header/footer band by mistake).
-    pixel_width, pixel_height = page_image.size
-    return _post_process_regions(
-        transcribed,
-        page_width=float(pixel_width),
-        page_height=float(pixel_height),
-        reorder_call=reorder_call,
-        classify_cfg=classify_cfg,
-        rtl=rtl,
-    )
+    for job in ml_jobs:
+        page_index = job.native_page.page_index
+        if page_index in outcomes:
+            continue
+        image = page_images[page_index]
+        detected = page_regions[page_index]
+        try:
+            if callable(page_batch):
+                transcribed = list(page_batch(detected, image))
+            else:
+                transcribed = []
+                for region in detected:
+                    if region.role is RegionRole.FIGURE:
+                        transcribed.append(region)
+                        continue
+                    transcribed.append(ocr_transcriber.transcribe(region, image))
+            # ML-branch bboxes are in pixel coords on the rasterised image,
+            # so the page dimensions handed to the post-processor must
+            # match (otherwise full-page regions land in the header/footer
+            # band by mistake).
+            pixel_width, pixel_height = image.size
+            regions = _post_process_regions(
+                transcribed,
+                page_width=float(pixel_width),
+                page_height=float(pixel_height),
+                reorder_call=reorder_call,
+                classify_cfg=classify_cfg,
+                rtl=rtl,
+            )
+        except BaseException as exc:
+            outcomes[page_index] = _handle_phase_exc(
+                exc,
+                page_index=page_index,
+                native_page=job.native_page,
+                total=total,
+                branch="ml",
+                strict=strict,
+                progress=progress,
+            )
+            continue
+        _emit_progress(progress, page_index, total, "complete:ml")
+        outcomes[page_index] = PageOutcome(
+            page_index=page_index,
+            branch="ml",
+            regions=tuple(regions),
+            validation=job.validation,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Shared exception → outcome handling
+# ---------------------------------------------------------------------------
+
+
+def _handle_phase_exc(
+    exc: BaseException,
+    *,
+    page_index: int,
+    native_page: NativePage,
+    total: int,
+    branch: str,
+    strict: bool,
+    progress: ProgressCallback | None,
+) -> PageOutcome:
+    """Map a phase exception to either a re-raise (strict) or a placeholder.
+
+    Mirrors the per-page exception arms of the previous interleaved
+    pipeline so failure semantics (typed exceptions, CUDA OOM
+    detection, generic catch-all) are preserved across phases.
+    """
+    if isinstance(exc, MemoryError):
+        if strict:
+            raise OutOfMemoryDuringInference(
+                f"page {page_index + 1}: {exc}; reduce --max-workers or rasterisation DPI"
+            ) from exc
+        reason = "out_of_memory"
+        _emit_progress(progress, page_index, total, f"failure:{reason}")
+        return _failure_outcome(page_index, native_page, reason, branch)
+    if isinstance(exc, RuntimeError) and _is_cuda_oom(exc):
+        if strict:
+            raise OutOfMemoryDuringInference(
+                f"page {page_index + 1}: CUDA OOM: {exc}; "
+                f"reduce --max-workers or rasterisation DPI"
+            ) from exc
+        _emit_progress(progress, page_index, total, "failure:cuda_out_of_memory")
+        return _failure_outcome(page_index, native_page, "cuda_out_of_memory", branch)
+    if isinstance(exc, ArabicPdfTranscribeError):
+        # Include ``str(exc)`` in the reason so JSON-log consumers see
+        # the actionable hint baked into the exception (e.g. the
+        # "prefetch the weights with: arabic-pdf-transcribe
+        # --prefetch-models" message on ModelDownloadError). Issue #16
+        # root cause #3.
+        reason = f"{type(exc).__name__}:{exc}"
+        if strict:
+            raise exc
+        _emit_progress(progress, page_index, total, f"failure:{reason}")
+        return _failure_outcome(page_index, native_page, reason, branch)
+    if isinstance(exc, Exception):
+        # Bare-except trade-off: this is the per-page boundary for the
+        # spec's "best-effort default" contract — if an upstream stage
+        # raises an unexpected exception we MUST NOT abort the whole
+        # run; a single failed page becomes a placeholder so the rest
+        # of the document still transcribes. With ``--strict`` the
+        # original exception is re-raised, preserving the traceback.
+        reason = f"{type(exc).__name__}:{exc}"
+        if strict:
+            raise exc
+        _emit_progress(progress, page_index, total, f"failure:{reason}")
+        return _failure_outcome(page_index, native_page, reason, branch)
+    # Non-Exception BaseException (KeyboardInterrupt, SystemExit, etc.):
+    # never swallow.
+    raise exc
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    cls = type(exc)
+    name = cls.__name__
+    module = (cls.__module__ or "").split(".", 1)[0]
+    return name == "OutOfMemoryError" and module == "torch"
 
 
 def _post_process_regions(
