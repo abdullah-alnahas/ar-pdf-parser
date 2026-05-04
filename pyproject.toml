@@ -63,6 +63,14 @@ dev = [
     "coverage==7.6.10",
     "reportlab==4.2.5",
 ]
+# ``--executor ray`` runs the layout + OCR adapters inside long-lived
+# Ray actors. Pinned to the validated host install (2.54.0); upgrade in
+# lockstep with environment Ray version to avoid GCS / raylet protocol
+# drift. Optional — the default ``--executor thread`` path works without
+# Ray installed.
+ray = [
+    "ray[default]==2.54.0",
+]
 
 [project.scripts]
 arabic-pdf-transcribe = "arabic_pdf_transcribe.cli:main"

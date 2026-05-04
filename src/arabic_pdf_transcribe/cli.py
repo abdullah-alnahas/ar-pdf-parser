@@ -50,7 +50,11 @@ from arabic_pdf_transcribe.errors import (
     OutOfMemoryDuringInference,
 )
 from arabic_pdf_transcribe.pipeline import TranscribeResult, transcribe
-from arabic_pdf_transcribe.validate.native_validator import ValidatorConfig
+from arabic_pdf_transcribe.extract.native import NativePage
+from arabic_pdf_transcribe.validate.native_validator import (
+    ValidationResult,
+    ValidatorConfig,
+)
 
 OutputFormat = Literal["md", "docx"]
 
@@ -217,6 +221,37 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not insert a page break between source PDF pages in DOCX output.",
     )
+    parser.add_argument(
+        "--force-ml",
+        action="store_true",
+        help=(
+            "force every page through the ML branch (layout + OCR), even when "
+            "native text extraction would have succeeded. Useful when native "
+            "extraction yields garbled glyphs on certain corpora."
+        ),
+    )
+    parser.add_argument(
+        "--executor",
+        choices=("thread", "ray"),
+        default="thread",
+        help=(
+            "executor for the ML stages. 'thread' (default) runs adapters in "
+            "the main process; 'ray' wraps them in long-lived Ray actors so "
+            "models load once per actor and survive across pages. Ray adds "
+            "the [ray] optional dep."
+        ),
+    )
+    parser.add_argument(
+        "--num-gpus-per-actor",
+        type=float,
+        default=0.5,
+        help=(
+            "GPU share (Ray scheduling token) per actor when --executor ray. "
+            "Default 0.5 lets layout + OCR co-reside on one GPU. Set to 1.0 "
+            "for dedicated GPU per actor on multi-GPU hosts. Note: Ray's GPU "
+            "share is virtual; you must ensure both models fit in VRAM."
+        ),
+    )
     return parser
 
 
@@ -242,6 +277,9 @@ class ValidatedArgs:
     batch_size: int | None
     rtl_docx: bool
     page_breaks: bool
+    force_ml: bool
+    executor: str  # "thread" | "ray"
+    num_gpus_per_actor: float
 
 
 def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
@@ -282,6 +320,9 @@ def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
         batch_size=ns.batch_size,
         rtl_docx=not ns.ltr,
         page_breaks=not ns.no_page_breaks,
+        force_ml=ns.force_ml,
+        executor=ns.executor,
+        num_gpus_per_actor=ns.num_gpus_per_actor,
     )
 
 
@@ -501,16 +542,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     validator_cfg = _validator_cfg_from_doc(config_doc)
     device = _resolve_device(args.device, config_doc)
     dtype = _resolve_dtype(args.dtype, config_doc)
-    layout_detector, ocr_transcriber = _maybe_build_ml_adapters(
-        config_doc,
-        device=device,
-        dtype=dtype,
-        layout_backend=args.layout_backend,
-        ocr_backend=args.ocr_backend,
-        disable_formula=args.disable_formula,
-        batch_size=args.batch_size,
-    )
+    if args.executor == "ray":
+        try:
+            layout_detector, ocr_transcriber = _build_ray_adapters(
+                device=device,
+                layout_backend=args.layout_backend,
+                ocr_backend=args.ocr_backend,
+                disable_formula=args.disable_formula,
+                batch_size=args.batch_size,
+                num_gpus_per_actor=args.num_gpus_per_actor,
+            )
+        except ModelDownloadError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_MODEL_MISSING
+    else:
+        layout_detector, ocr_transcriber = _maybe_build_ml_adapters(
+            config_doc,
+            device=device,
+            dtype=dtype,
+            layout_backend=args.layout_backend,
+            ocr_backend=args.ocr_backend,
+            disable_formula=args.disable_formula,
+            batch_size=args.batch_size,
+        )
     dpi = _resolve_dpi(args.dpi, config_doc)
+
+    transcribe_validator = _force_ml_validator if args.force_ml else None
 
     try:
         try:
@@ -518,6 +575,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.input,
                 layout_detector=layout_detector,
                 ocr_transcriber=ocr_transcriber,
+                validator=transcribe_validator,
                 validator_config=validator_cfg,
                 pages=args.pages,
                 strict=args.strict,
@@ -737,6 +795,58 @@ def _maybe_build_ml_adapters(
         batch_size=batch_size,
     )
     return layout_detector, ocr_transcriber
+
+
+def _build_ray_adapters(
+    *,
+    device: str,
+    layout_backend: str,
+    ocr_backend: str,
+    disable_formula: bool,
+    batch_size: int | None,
+    num_gpus_per_actor: float,
+) -> tuple[object, object]:
+    """Build Ray actor proxies that match the LayoutDetector / OCRTranscriber
+    Protocols.
+
+    Each proxy holds one ``@ray.remote`` actor with a single model
+    loaded inside the worker process. Phase C / D in the pipeline
+    invoke them just like in-process adapters — the proxies forward
+    via ``ray.get`` transparently. Failure surface: importing ``ray``
+    when the optional extra is not installed raises
+    :class:`ModelDownloadError` (CLI maps to exit 5).
+    """
+    from arabic_pdf_transcribe._ray_executor import RayLayoutProxy, RayOCRProxy
+
+    resolved_device = device or "auto"
+    layout_proxy = RayLayoutProxy(
+        backend=layout_backend,
+        device=resolved_device,
+        num_gpus=num_gpus_per_actor,
+    )
+    ocr_proxy = RayOCRProxy(
+        backend=ocr_backend,
+        device=resolved_device,
+        disable_formula=disable_formula,
+        batch_size=batch_size,
+        num_gpus=num_gpus_per_actor,
+    )
+    return layout_proxy, ocr_proxy
+
+
+def _force_ml_validator(
+    page: NativePage, config: ValidatorConfig
+) -> ValidationResult:
+    """Validator that always rejects → forces every page through the ML
+    branch.
+
+    Wired in by ``--force-ml``. Useful when native extraction yields
+    garbled glyphs (custom embedded fonts, broken ToUnicode CMaps) and
+    the user wants OCR everywhere regardless of the heuristic
+    validator's verdict.
+    """
+    del page, config  # signature-only — every page rejects unconditionally
+    return ValidationResult(accept=False, signals={}, reasons=("forced_ml_cli",))
 
 
 def _build_layout(name: str, *, device: str) -> object | None:
