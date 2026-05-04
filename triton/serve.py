@@ -160,11 +160,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.cpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-    # PyTriton spawns triton_python_backend_stub as a subprocess; that
-    # binary dlopens libpython3.X.so.1.0 from LD_LIBRARY_PATH, not from
-    # the running interpreter. Prepend sys.exec_prefix/lib so the stub
-    # finds the matching shared lib in conda / venv layouts where it
-    # is not on the system loader path.
+    # PyTriton spawns triton_python_backend_stub as a subprocess that
+    # embeds CPython. That subprocess needs:
+    #   * libpython3.X.so.1.0 on LD_LIBRARY_PATH (so the stub binary
+    #     can dlopen it), and
+    #   * PYTHONHOME pointing at the active interpreter so the embedded
+    #     python finds its stdlib + lib-dynload (otherwise it fails
+    #     with "No module named '_socket'" / 'math' on uv / portable
+    #     python builds whose layout the stub doesn't auto-discover).
     _ld_path = os.environ.get("LD_LIBRARY_PATH", "")
     _libdir = os.path.join(sys.exec_prefix, "lib")
     if _libdir not in _ld_path.split(":"):
@@ -172,6 +175,9 @@ def main(argv: list[str] | None = None) -> int:
             f"{_libdir}:{_ld_path}" if _ld_path else _libdir
         )
         logger.info("prepended %s to LD_LIBRARY_PATH for backend stub", _libdir)
+    if "PYTHONHOME" not in os.environ:
+        os.environ["PYTHONHOME"] = sys.exec_prefix
+        logger.info("set PYTHONHOME=%s for backend stub", sys.exec_prefix)
 
     try:
         from pytriton.model_config import ModelConfig, Tensor
