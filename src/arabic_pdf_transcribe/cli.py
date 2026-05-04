@@ -179,27 +179,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ocr",
-        choices=("surya", "easyocr-ara", "triton"),
+        choices=("surya", "easyocr-ara"),
         default="surya",
         help=(
-            "OCR backend: 'surya' (default; multilingual line-level OCR), "
-            "'easyocr-ara' (Arabic-only CPU fallback), or 'triton' (NVIDIA "
-            "Triton Inference Server hosting surya — gives real GPU "
-            "concurrency via instance_group + CUDA streams; see "
-            "triton/models/surya_ocr/)."
+            "OCR backend: 'surya' (default; multilingual line-level OCR, "
+            "highest quality on the test corpus) or 'easyocr-ara' "
+            "(Arabic-only, CPU-friendly, more typos). See "
+            "notebooks/00_model_survey.ipynb."
         ),
-    )
-    parser.add_argument(
-        "--triton-url",
-        type=str,
-        default="localhost:8001",
-        help="host:port of the Triton gRPC endpoint (used with --ocr triton).",
-    )
-    parser.add_argument(
-        "--triton-model",
-        type=str,
-        default="surya_ocr",
-        help="Triton model name (used with --ocr triton; default: surya_ocr).",
     )
     parser.add_argument(
         "--no-formula",
@@ -255,8 +242,6 @@ class ValidatedArgs:
     batch_size: int | None
     rtl_docx: bool
     page_breaks: bool
-    triton_url: str
-    triton_model: str
 
 
 def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
@@ -297,8 +282,6 @@ def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
         batch_size=ns.batch_size,
         rtl_docx=not ns.ltr,
         page_breaks=not ns.no_page_breaks,
-        triton_url=ns.triton_url,
-        triton_model=ns.triton_model,
     )
 
 
@@ -434,8 +417,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         ocr_backend=args.ocr_backend,
         disable_formula=args.disable_formula,
         batch_size=args.batch_size,
-        triton_url=args.triton_url,
-        triton_model=args.triton_model,
     )
     dpi = _resolve_dpi(args.dpi, config_doc)
 
@@ -678,8 +659,6 @@ def _maybe_build_ml_adapters(
     ocr_backend: str = "surya",
     disable_formula: bool = False,
     batch_size: int | None = None,
-    triton_url: str = "localhost:8001",
-    triton_model: str = "surya_ocr",
 ) -> tuple[object | None, object | None]:
     """Return ``(layout_detector, ocr_transcriber)`` or ``(None, None)``.
 
@@ -696,8 +675,6 @@ def _maybe_build_ml_adapters(
         device=resolved_device,
         disable_formula=disable_formula,
         batch_size=batch_size,
-        triton_url=triton_url,
-        triton_model=triton_model,
     )
     return layout_detector, ocr_transcriber
 
@@ -724,8 +701,6 @@ def _build_ocr(
     device: str,
     disable_formula: bool = False,
     batch_size: int | None = None,
-    triton_url: str = "localhost:8001",
-    triton_model: str = "surya_ocr",
 ) -> object | None:
     if name == "surya":
         try:
@@ -742,15 +717,6 @@ def _build_ocr(
             return None
         return EasyOCRTranscriber(
             device=device,
-            disable_formula=disable_formula,
-            batch_size=batch_size,
-        )
-    if name == "triton":
-        from arabic_pdf_transcribe.ocr.triton_ocr import TritonOCRTranscriber
-
-        return TritonOCRTranscriber(
-            url=triton_url,
-            model_name=triton_model,
             disable_formula=disable_formula,
             batch_size=batch_size,
         )

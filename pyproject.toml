@@ -51,20 +51,6 @@ ml = [
     "torchvision==0.20.1",
     "Pillow==11.0.0",
 ]
-triton = [
-    # gRPC client for talking to nvcr.io/nvidia/tritonserver hosting the
-    # surya_ocr Python backend (see triton/models/surya_ocr/). The
-    # server side ships in the Triton container; this extra is only
-    # needed on the *client* (CLI / FastAPI) machine.
-    "tritonclient[grpc]>=2.50.0",
-]
-triton-server = [
-    # Server-side: PyTriton wraps surya in a real Triton process
-    # without the C++ Python-backend / docker dance. Run via
-    # ``python triton/serve.py``. Drags in tritonclient too so this
-    # extra alone is enough to also act as a client.
-    "nvidia-pytriton>=0.5.10",
-]
 dev = [
     "pytest==8.3.4",
     "pytest-cov==6.0.0",
