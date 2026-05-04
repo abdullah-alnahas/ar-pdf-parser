@@ -30,7 +30,9 @@ adapters that need a path-shaped artefact.
 from __future__ import annotations
 
 import tempfile
+import threading
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -217,9 +219,6 @@ def transcribe(
     reorder_call = reorder_fn or _reorder_default
     classify_cfg = classify_config or ClassifyConfig(rtl=rtl)
 
-    pages_out: list[PageOutcome] = []
-    flat_regions: list[Region] = []
-
     # Lazy-imported here so phase 9's TOML-config loader can stub the
     # loader for unit tests without a full pypdfium2 install.
     from arabic_pdf_transcribe.pdf._pypdfium2_loader import open_pdf
@@ -231,9 +230,22 @@ def transcribe(
         # at the boundary, so those exit codes fire here before any
         # extraction work.
         total = len(document)
-        for native_page in extract_native_from_document(document, pages=selected):
-            outcome = _process_page(
+        # Native extraction iterates the document handle sequentially —
+        # materialise once so the parallel page workers below don't
+        # contend on the iterator (and so a strict-mode failure during
+        # extraction fires before any worker starts).
+        native_pages = list(extract_native_from_document(document, pages=selected))
+
+        # ``pypdfium2`` is not thread-safe across page handles on the
+        # same document; the lock serialises ``document[i]``+rasterise
+        # while the heavy ML work (layout + OCR on the rendered image)
+        # runs unlocked, so threads still parallelise the expensive part.
+        document_lock = threading.Lock()
+
+        def _run_one(native_page: NativePage) -> PageOutcome:
+            return _process_page(
                 document=document,
+                document_lock=document_lock,
                 native_page=native_page,
                 total=total,
                 validator=actual_validator,
@@ -247,9 +259,21 @@ def transcribe(
                 strict=strict,
                 progress=progress,
             )
-            pages_out.append(outcome)
-            flat_regions.extend(outcome.regions)
 
+        if max_workers <= 1 or len(native_pages) <= 1:
+            outcomes = [_run_one(np) for np in native_pages]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="apt-page"
+            ) as pool:
+                # ``map`` preserves input order, which is what the
+                # caller expects for ``pages_out`` / ``flat_regions``.
+                # Strict-mode failures re-raise out of the worker and
+                # propagate through ``map`` to the caller.
+                outcomes = list(pool.map(_run_one, native_pages))
+
+    pages_out: list[PageOutcome] = list(outcomes)
+    flat_regions: list[Region] = [r for outcome in pages_out for r in outcome.regions]
     return TranscribeResult(pages=tuple(pages_out), regions=tuple(flat_regions))
 
 
@@ -261,6 +285,7 @@ def transcribe(
 def _process_page(
     *,
     document: object,
+    document_lock: threading.Lock,
     native_page: NativePage,
     total: int,
     validator: Callable[[NativePage, ValidatorConfig], ValidationResult],
@@ -303,6 +328,7 @@ def _process_page(
         branch_state["branch"] = "ml"
         regions = _run_ml_branch(
             document=document,
+            document_lock=document_lock,
             native_page=native_page,
             total=total,
             layout_detector=layout_detector,
@@ -389,6 +415,7 @@ def _is_cuda_oom(exc: BaseException) -> bool:
 def _run_ml_branch(
     *,
     document: object,
+    document_lock: threading.Lock,
     native_page: NativePage,
     total: int,
     layout_detector: LayoutDetector | None,
@@ -406,21 +433,34 @@ def _run_ml_branch(
         )
     page_index = native_page.page_index
     _emit_progress(progress, page_index, total, "layout")
-    page_image = _rasterise_page_from_document(document, page_index, dpi=dpi)
+    with document_lock:
+        page_image = _rasterise_page_from_document(document, page_index, dpi=dpi)
     detected = list(layout_detector.detect(page_image, page_index))
-    transcribed: list[Region] = []
+    n_regions = len(detected)
     # Issue #18 RC#2: emit a per-region progress event before each
     # OCR call so a long CPU run shows visible progress instead of
     # appearing to hang. Encoded into the event string so the
     # ``ProgressCallback`` signature stays stable.
-    n_regions = len(detected)
     for idx, region in enumerate(detected, start=1):
         role_name = region.role.value
         _emit_progress(progress, page_index, total, f"region:{idx}/{n_regions}:{role_name}")
-        if region.role is RegionRole.FIGURE:
-            transcribed.append(region)
-            continue
-        transcribed.append(ocr_transcriber.transcribe(region, page_image))
+    # Adapter-level batching: when the OCR backend exposes
+    # ``transcribe_page`` (surya, easyocr — see
+    # :mod:`arabic_pdf_transcribe.ocr`), all non-figure regions on the
+    # page go to the model in a single call so detection and recognition
+    # warm-up cost amortises across the page. Adapters without
+    # ``transcribe_page`` fall back to the per-region loop.
+    page_batch = getattr(ocr_transcriber, "transcribe_page", None)
+    if callable(page_batch):
+        batched = page_batch(detected, page_image)
+        transcribed: list[Region] = list(batched)  # type: ignore[arg-type]
+    else:
+        transcribed = []
+        for region in detected:
+            if region.role is RegionRole.FIGURE:
+                transcribed.append(region)
+                continue
+            transcribed.append(ocr_transcriber.transcribe(region, page_image))
     # ML-branch bboxes are in pixel coords on the rasterised image, so the
     # page dimensions handed to the post-processor must match (otherwise
     # full-page regions land in the header/footer band by mistake).

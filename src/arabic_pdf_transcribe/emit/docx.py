@@ -17,10 +17,16 @@ Mapping (see plan section "Phase 7"):
 * ``FAILURE_PLACEHOLDER`` → ``Quote`` style paragraph.
 * ``UNKNOWN`` → ``Normal``.
 
+When ``rtl=True`` (default — Arabic-first), every paragraph receives
+``<w:bidi/>`` + right-aligned, every run gets ``<w:rtl/>``, and tables
+get ``<w:bidiVisual/>`` so columns lay out right-to-left.
+
+When ``page_breaks=True`` (default), an explicit page break separates
+regions belonging to different source PDF pages so the Word output
+mirrors the original pagination.
+
 The emitter is **deterministic**: no timestamps, no environment
-data, no document author / company metadata. Output is suitable for
-snapshot-style structural tests (open with ``python-docx``, walk
-paragraphs, assert styles).
+data, no document author / company metadata.
 
 ``python-docx`` is imported lazily — importing this module costs
 nothing until :func:`emit_docx` is first called.
@@ -46,6 +52,9 @@ from arabic_pdf_transcribe.regions import (
 
 if TYPE_CHECKING:  # pragma: no cover — typing-only
     from docx.document import Document as _DocxDocument
+    from docx.table import Table as _DocxTable
+    from docx.text.paragraph import Paragraph as _DocxParagraph
+    from docx.text.run import Run as _DocxRun
 
 
 def emit_docx(
@@ -54,8 +63,21 @@ def emit_docx(
     *,
     normalisation: NormalisationForm = DEFAULT_FORM,
     apply_bidi: bool = True,
+    rtl: bool = True,
+    page_breaks: bool = True,
 ) -> None:
     """Render ``regions`` to a Word file at ``output_path``.
+
+    Parameters
+    ----------
+    rtl:
+        When ``True`` (default), every paragraph and table is marked
+        right-to-left; runs receive ``<w:rtl/>``. Set ``False`` to emit
+        an LTR document.
+    page_breaks:
+        When ``True`` (default), a page break is inserted between
+        regions whose ``page_index`` differs, so each source PDF page
+        lands on its own Word page.
 
     The output file is overwritten if it exists. The function does
     not perform any network I/O.
@@ -69,6 +91,8 @@ def emit_docx(
         region_list, normalisation=normalisation, paired=caption_group_ids
     )
 
+    last_page_index: int | None = None
+    pending_break = False
     for region in region_list:
         role = region.role
         if role is RegionRole.HEADER_FOOTER:
@@ -76,44 +100,64 @@ def emit_docx(
         if role is RegionRole.CAPTION and region.group_id in caption_group_ids:
             # Already rendered alongside the figure.
             continue
+        if (
+            page_breaks
+            and last_page_index is not None
+            and region.page_index != last_page_index
+        ):
+            pending_break = True
+        last_page_index = region.page_index
+
         if role is RegionRole.HEADING:
-            _add_heading(
+            paragraph = _add_heading(
                 document,
                 region,
                 normalisation=normalisation,
                 apply_bidi=apply_bidi,
             )
         elif role is RegionRole.LIST_ITEM:
-            _add_list_item(
+            paragraph = _add_list_item(
                 document,
                 region,
                 normalisation=normalisation,
                 apply_bidi=apply_bidi,
             )
         elif role is RegionRole.TABLE:
-            _add_table(document, region, normalisation=normalisation)
+            if pending_break:
+                # Tables don't carry pPr we control directly; emit a
+                # marker paragraph that owns the page-break-before.
+                _add_page_break_anchor(document, rtl=rtl)
+                pending_break = False
+            _add_table(document, region, normalisation=normalisation, rtl=rtl)
+            continue  # tables don't go through the paragraph RTL path
         elif role is RegionRole.FIGURE:
-            _add_figure(
+            paragraph = _add_figure(
                 document,
                 region,
                 pending_caption_text=pending_caption_text,
             )
         elif role is RegionRole.CAPTION:
-            _add_caption(
+            paragraph = _add_caption(
                 document,
                 region,
                 normalisation=normalisation,
                 apply_bidi=apply_bidi,
             )
         elif role is RegionRole.FAILURE_PLACEHOLDER:
-            _add_failure(document, region)
+            paragraph = _add_failure(document, region)
         else:  # PARAGRAPH / UNKNOWN
-            _add_paragraph(
+            paragraph = _add_paragraph(
                 document,
                 region,
                 normalisation=normalisation,
                 apply_bidi=apply_bidi,
             )
+
+        if pending_break:
+            _set_page_break_before(paragraph)
+            pending_break = False
+        if rtl:
+            _set_rtl_paragraph(paragraph)
 
     document.save(str(output_path))
 
@@ -162,6 +206,63 @@ def _collect_caption_texts(
 
 
 # ---------------------------------------------------------------------------
+# RTL / page-break helpers
+# ---------------------------------------------------------------------------
+
+
+def _set_rtl_paragraph(paragraph: _DocxParagraph) -> None:
+    """Mark ``paragraph`` right-to-left (bidi + right-aligned + rtl runs)."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    pPr = paragraph._p.get_or_add_pPr()
+    if pPr.find(qn("w:bidi")) is None:
+        pPr.append(OxmlElement("w:bidi"))
+    for run in paragraph.runs:
+        _set_rtl_run(run)
+
+
+def _set_rtl_run(run: _DocxRun) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    rPr = run._r.get_or_add_rPr()
+    if rPr.find(qn("w:rtl")) is None:
+        rPr.append(OxmlElement("w:rtl"))
+
+
+def _set_rtl_table(table: _DocxTable) -> None:
+    """Mark ``table`` right-to-left layout + RTL paragraphs in every cell."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    tblPr = table._tbl.tblPr
+    if tblPr is not None and tblPr.find(qn("w:bidiVisual")) is None:
+        tblPr.append(OxmlElement("w:bidiVisual"))
+    for row in table.rows:
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                _set_rtl_paragraph(paragraph)
+
+
+def _set_page_break_before(paragraph: _DocxParagraph) -> None:
+    paragraph.paragraph_format.page_break_before = True
+
+
+def _add_page_break_anchor(document: _DocxDocument, *, rtl: bool) -> None:
+    """Empty paragraph that just owns a page-break-before flag.
+
+    Used before tables, which don't expose ``page_break_before`` themselves.
+    """
+    paragraph = document.add_paragraph(style="Normal")
+    _set_page_break_before(paragraph)
+    if rtl:
+        _set_rtl_paragraph(paragraph)
+
+
+# ---------------------------------------------------------------------------
 # Per-role writers
 # ---------------------------------------------------------------------------
 
@@ -179,11 +280,11 @@ def _add_heading(
     *,
     normalisation: NormalisationForm,
     apply_bidi: bool,
-) -> None:
+) -> _DocxParagraph:
     level = region.heading_level if region.heading_level is not None else 2
     level = max(1, min(level, 9))
     text = _prepare_text(region.text, normalisation=normalisation, apply_bidi=apply_bidi)
-    document.add_paragraph(text, style=f"Heading {level}")
+    return document.add_paragraph(text, style=f"Heading {level}")
 
 
 def _add_paragraph(
@@ -192,9 +293,9 @@ def _add_paragraph(
     *,
     normalisation: NormalisationForm,
     apply_bidi: bool,
-) -> None:
+) -> _DocxParagraph:
     text = _prepare_text(region.text, normalisation=normalisation, apply_bidi=apply_bidi)
-    document.add_paragraph(text, style="Normal")
+    return document.add_paragraph(text, style="Normal")
 
 
 def _add_caption(
@@ -203,11 +304,12 @@ def _add_caption(
     *,
     normalisation: NormalisationForm,
     apply_bidi: bool,
-) -> None:
+) -> _DocxParagraph:
     text = _prepare_text(region.text, normalisation=normalisation, apply_bidi=apply_bidi)
     paragraph = document.add_paragraph(style="Normal")
     run = paragraph.add_run(text)
     run.italic = True
+    return paragraph
 
 
 def _add_list_item(
@@ -216,7 +318,7 @@ def _add_list_item(
     *,
     normalisation: NormalisationForm,
     apply_bidi: bool,
-) -> None:
+) -> _DocxParagraph:
     marker = region.list_marker
     raw_text = region.text
     if marker is not None and marker.raw_marker:
@@ -229,13 +331,15 @@ def _add_list_item(
             raw_text = leading_ws + rest
     text = _prepare_text(raw_text, normalisation=normalisation, apply_bidi=apply_bidi)
     style = "List Number" if marker is not None and marker.kind == "ordered" else "List Bullet"
-    document.add_paragraph(text, style=style)
+    return document.add_paragraph(text, style=style)
 
 
-def _add_failure(document: _DocxDocument, region: Region) -> None:
+def _add_failure(document: _DocxDocument, region: Region) -> _DocxParagraph:
     page_n = region.page_index + 1
     reason = region.failure_reason or "unknown"
-    document.add_paragraph(f"Transcription failed (page {page_n}): {reason}", style="Quote")
+    return document.add_paragraph(
+        f"Transcription failed (page {page_n}): {reason}", style="Quote"
+    )
 
 
 def _add_figure(
@@ -243,14 +347,14 @@ def _add_figure(
     region: Region,
     *,
     pending_caption_text: dict[str, str],
-) -> None:
+) -> _DocxParagraph:
     page_n = region.page_index + 1
     text = f"Figure on page {page_n}"
     if region.group_id is not None and region.group_id in pending_caption_text:
         caption = pending_caption_text[region.group_id]
         if caption:
             text = f"{text}: {caption}"
-    document.add_paragraph(text, style="Normal")
+    return document.add_paragraph(text, style="Normal")
 
 
 def _add_table(
@@ -258,12 +362,15 @@ def _add_table(
     region: Region,
     *,
     normalisation: NormalisationForm,
+    rtl: bool,
 ) -> None:
     grid: TableGrid | None = region.table_grid
     if grid is None or grid.n_rows == 0 or grid.n_cols == 0:
         return
     if region.meta.get("v1_table_simplification") is True:
-        document.add_paragraph("(v1: merged cells flattened)", style="Normal")
+        marker = document.add_paragraph("(v1: merged cells flattened)", style="Normal")
+        if rtl:
+            _set_rtl_paragraph(marker)
     table = document.add_table(rows=grid.n_rows, cols=grid.n_cols)
     for r_idx, row in enumerate(grid.rows):
         for c_idx in range(grid.n_cols):
@@ -271,6 +378,8 @@ def _add_table(
                 normalise_text(row[c_idx].text, form=normalisation) if c_idx < len(row) else ""
             )
             table.cell(r_idx, c_idx).text = cell_text
+    if rtl:
+        _set_rtl_table(table)
 
 
 __all__ = ["emit_docx"]

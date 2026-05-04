@@ -7,6 +7,8 @@ Useful as a CPU-friendly fallback when surya is unavailable or too slow.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from PIL.Image import Image as PILImage
 
 from arabic_pdf_transcribe.errors import ModelDownloadError, OCRTranscriptionError
@@ -20,7 +22,13 @@ def _crop(image: PILImage, bbox: BBox) -> PILImage:
 class EasyOCRTranscriber:
     """OCR transcriber backed by EasyOCR with Arabic weights."""
 
-    def __init__(self, *, device: str = "auto") -> None:
+    def __init__(
+        self,
+        *,
+        device: str = "auto",
+        disable_formula: bool = False,
+        batch_size: int | None = None,
+    ) -> None:
         if device == "auto":
             try:
                 import torch
@@ -29,6 +37,12 @@ class EasyOCRTranscriber:
             except ImportError:
                 device = "cpu"
         self._gpu = device == "cuda"
+        # ``disable_formula`` / ``batch_size`` are accepted for API
+        # symmetry with the surya adapter. EasyOCR does not emit LaTeX,
+        # and its public API does not surface a batch-size knob — both
+        # are no-ops here.
+        self._disable_formula = disable_formula
+        self._batch_size = batch_size
         self._reader: object | None = None
 
     def _load(self) -> object:
@@ -75,6 +89,11 @@ class EasyOCRTranscriber:
             return region.with_table_grid(TableGrid(rows=tuple(new_rows)))
         text = self._ocr_image(_crop(page_image, region.bbox))
         return region.with_text(text)
+
+    def transcribe_page(
+        self, regions: Sequence[Region], page_image: PILImage
+    ) -> list[Region]:
+        return [self.transcribe(r, page_image) for r in regions]
 
 
 __all__ = ["EasyOCRTranscriber"]

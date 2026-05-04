@@ -179,14 +179,56 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ocr",
-        choices=("surya", "easyocr-ara"),
+        choices=("surya", "easyocr-ara", "triton"),
         default="surya",
         help=(
-            "OCR backend: 'surya' (default; multilingual line-level OCR, "
-            "highest quality on the test corpus) or 'easyocr-ara' "
-            "(Arabic-only, CPU-friendly, more typos). See "
-            "notebooks/00_model_survey.ipynb."
+            "OCR backend: 'surya' (default; multilingual line-level OCR), "
+            "'easyocr-ara' (Arabic-only CPU fallback), or 'triton' (NVIDIA "
+            "Triton Inference Server hosting surya — gives real GPU "
+            "concurrency via instance_group + CUDA streams; see "
+            "triton/models/surya_ocr/)."
         ),
+    )
+    parser.add_argument(
+        "--triton-url",
+        type=str,
+        default="localhost:8001",
+        help="host:port of the Triton gRPC endpoint (used with --ocr triton).",
+    )
+    parser.add_argument(
+        "--triton-model",
+        type=str,
+        default="surya_ocr",
+        help="Triton model name (used with --ocr triton; default: surya_ocr).",
+    )
+    parser.add_argument(
+        "--no-formula",
+        action="store_true",
+        help=(
+            "disable LaTeX/formula recognition; OCR runs in plain-text "
+            "mode and any residual <math>...</math> or $...$ wrappers "
+            "in the output are stripped."
+        ),
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help=(
+            "OCR batch size hint; forwarded to surya's "
+            "recognition_batch_size / detection_batch_size. Tune up "
+            "for higher GPU throughput, down to fit lower-VRAM cards."
+        ),
+    )
+    parser.add_argument(
+        "--ltr",
+        action="store_true",
+        help="emit a left-to-right Word document (default: RTL).",
+    )
+    parser.add_argument(
+        "--no-page-breaks",
+        action="store_true",
+        help="do not insert a page break between source PDF pages in DOCX output.",
     )
     return parser
 
@@ -209,6 +251,12 @@ class ValidatedArgs:
     dtype: str | None  # "auto" | "float32" | "float16" | "bfloat16" | None
     layout_backend: str  # "full-page" | "doclayout-yolo"
     ocr_backend: str  # "surya" | "easyocr-ara"
+    disable_formula: bool
+    batch_size: int | None
+    rtl_docx: bool
+    page_breaks: bool
+    triton_url: str
+    triton_model: str
 
 
 def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
@@ -228,6 +276,8 @@ def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
     progress_mode = _resolve_progress_mode(quiet=ns.quiet, json_logs=ns.json_logs)
     max_workers = _resolve_max_workers(ns.max_workers)
     dpi = ns.dpi if ns.dpi is not None else 200
+    if ns.batch_size is not None and ns.batch_size < 1:
+        raise ValueError(f"--batch-size must be >= 1, got {ns.batch_size}")
     return ValidatedArgs(
         input=ns.input,
         output=ns.output,
@@ -243,6 +293,12 @@ def validate_args(ns: argparse.Namespace) -> ValidatedArgs:
         dtype=ns.dtype,
         layout_backend=ns.layout,
         ocr_backend=ns.ocr,
+        disable_formula=ns.no_formula,
+        batch_size=ns.batch_size,
+        rtl_docx=not ns.ltr,
+        page_breaks=not ns.no_page_breaks,
+        triton_url=ns.triton_url,
+        triton_model=ns.triton_model,
     )
 
 
@@ -376,6 +432,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         force_dtype=dtype_is_cli_override,
         layout_backend=args.layout_backend,
         ocr_backend=args.ocr_backend,
+        disable_formula=args.disable_formula,
+        batch_size=args.batch_size,
+        triton_url=args.triton_url,
+        triton_model=args.triton_model,
     )
     dpi = _resolve_dpi(args.dpi, config_doc)
 
@@ -616,6 +676,10 @@ def _maybe_build_ml_adapters(
     force_dtype: bool = False,
     layout_backend: str = "full-page",
     ocr_backend: str = "surya",
+    disable_formula: bool = False,
+    batch_size: int | None = None,
+    triton_url: str = "localhost:8001",
+    triton_model: str = "surya_ocr",
 ) -> tuple[object | None, object | None]:
     """Return ``(layout_detector, ocr_transcriber)`` or ``(None, None)``.
 
@@ -627,7 +691,14 @@ def _maybe_build_ml_adapters(
     """
     resolved_device = device or "auto"
     layout_detector = _build_layout(layout_backend, device=resolved_device)
-    ocr_transcriber = _build_ocr(ocr_backend, device=resolved_device)
+    ocr_transcriber = _build_ocr(
+        ocr_backend,
+        device=resolved_device,
+        disable_formula=disable_formula,
+        batch_size=batch_size,
+        triton_url=triton_url,
+        triton_model=triton_model,
+    )
     return layout_detector, ocr_transcriber
 
 
@@ -647,19 +718,42 @@ def _build_layout(name: str, *, device: str) -> object | None:
     raise ValueError(f"unknown layout backend: {name!r}")
 
 
-def _build_ocr(name: str, *, device: str) -> object | None:
+def _build_ocr(
+    name: str,
+    *,
+    device: str,
+    disable_formula: bool = False,
+    batch_size: int | None = None,
+    triton_url: str = "localhost:8001",
+    triton_model: str = "surya_ocr",
+) -> object | None:
     if name == "surya":
         try:
             from arabic_pdf_transcribe.ocr.surya_ocr import SuryaOCRTranscriber
         except ImportError:
             return None
-        return SuryaOCRTranscriber()
+        return SuryaOCRTranscriber(
+            disable_formula=disable_formula, batch_size=batch_size
+        )
     if name == "easyocr-ara":
         try:
             from arabic_pdf_transcribe.ocr.easy_ocr import EasyOCRTranscriber
         except ImportError:
             return None
-        return EasyOCRTranscriber(device=device)
+        return EasyOCRTranscriber(
+            device=device,
+            disable_formula=disable_formula,
+            batch_size=batch_size,
+        )
+    if name == "triton":
+        from arabic_pdf_transcribe.ocr.triton_ocr import TritonOCRTranscriber
+
+        return TritonOCRTranscriber(
+            url=triton_url,
+            model_name=triton_model,
+            disable_formula=disable_formula,
+            batch_size=batch_size,
+        )
     raise ValueError(f"unknown OCR backend: {name!r}")
 
 
@@ -679,7 +773,12 @@ def _write_output(args: ValidatedArgs, result: TranscribeResult) -> None:
         assert args.output is not None
         from arabic_pdf_transcribe.emit.docx import emit_docx
 
-        emit_docx(result.regions, args.output)
+        emit_docx(
+            result.regions,
+            args.output,
+            rtl=args.rtl_docx,
+            page_breaks=args.page_breaks,
+        )
 
 
 def _write_text(output: Path | None, text: str, stdout: TextIO) -> None:
