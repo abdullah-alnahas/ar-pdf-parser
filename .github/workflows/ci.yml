@@ -1,9 +1,11 @@
 name: ci
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # Auto-triggers disabled -- run manually via workflow_dispatch only.
+  # push:
+  #   branches: [main]
+  # pull_request:
+  workflow_dispatch:
 
 jobs:
   ci:
