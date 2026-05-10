@@ -6,9 +6,9 @@ name: nightly
 # checkpoint on every invocation.
 
 on:
-  schedule:
-    # 04:00 UTC -- off-peak for Hugging Face Hub.
-    - cron: "0 4 * * *"
+  # Nightly schedule disabled -- run manually via workflow_dispatch only.
+  # schedule:
+  #   - cron: "0 4 * * *"
   workflow_dispatch:
 
 jobs:
